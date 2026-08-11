@@ -152,15 +152,24 @@ There is no server, no lockfile, and no state you can't inspect with `git config
 
 ## Development
 
-```sh
-# with nix
-nix shell nixpkgs#go --command go build -o sb .
-nix shell nixpkgs#go --command go test ./...
+There's a Nix flake with a devshell that provides `go`, `gopls`, `gotools`,
+and `delve`:
 
-# or with a system go toolchain
-go build -o sb .
-go test ./...
+```sh
+nix develop
+$ go build -o sb .
+$ go test ./...
 ```
+
+With [direnv](https://direnv.net) + [nix-direnv](https://github.com/nix-community/nix-direnv),
+`cd` into the repo activates the devshell automatically (the `.envrc` runs
+`use flake`). First time:
+
+```sh
+direnv allow
+```
+
+Or bring your own toolchain — anything with `go` ≥ 1.25 works.
 
 ## License
 
