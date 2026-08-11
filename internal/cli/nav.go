@@ -3,6 +3,8 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -12,26 +14,38 @@ import (
 )
 
 var upCmd = &cobra.Command{
-	Use:   "up",
-	Short: "Move up one branch in the stack (toward the top)",
-	RunE:  runUp,
+	Use:   "up [N]",
+	Short: "Move up N branches in the stack (default 1)",
+	Long: `Moves toward the top of the stack. Without N, moves one branch;
+with N, moves up to N branches. At each fork, the branch picker opens
+so you can choose which child to follow.
+
+If N exceeds the distance to a leaf, sb up stops at the leaf and prints
+how far it got.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runUp,
 }
 
 var downCmd = &cobra.Command{
-	Use:   "down",
-	Short: "Move down one branch in the stack (toward trunk)",
-	RunE:  runDown,
+	Use:   "down [N]",
+	Short: "Move down N branches in the stack (default 1)",
+	Long: `Moves toward trunk. Without N, moves one branch; with N, moves up
+to N branches. Stops at trunk if N would take you further.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runDown,
 }
 
 var topCmd = &cobra.Command{
 	Use:   "top",
 	Short: "Jump to the top of the current stack",
+	Args:  cobra.NoArgs,
 	RunE:  runTop,
 }
 
 var bottomCmd = &cobra.Command{
 	Use:   "bottom",
 	Short: "Jump to the branch just above trunk in the current stack",
+	Args:  cobra.NoArgs,
 	RunE:  runBottom,
 }
 
@@ -62,45 +76,137 @@ func loadStackAndCurrent() (*stack.Stack, string, config.Config, error) {
 	return s, current, cfg, nil
 }
 
+// parseHopCount parses an optional positional "N" argument. N must be a
+// positive integer.
+func parseHopCount(args []string) (int, error) {
+	if len(args) == 0 {
+		return 1, nil
+	}
+	n, err := strconv.Atoi(args[0])
+	if err != nil {
+		return 0, fmt.Errorf("N must be a positive integer, got %q", args[0])
+	}
+	if n < 1 {
+		return 0, fmt.Errorf("N must be at least 1 (got %d)", n)
+	}
+	return n, nil
+}
+
 func runUp(cmd *cobra.Command, args []string) error {
+	n, err := parseHopCount(args)
+	if err != nil {
+		return err
+	}
 	s, current, _, err := loadStackAndCurrent()
 	if err != nil {
 		return err
 	}
-	node, ok := s.All[current]
-	if !ok || len(node.Children) == 0 {
+
+	candidates, depth := candidatesAtDepth(s, current, n)
+	if depth == 0 {
 		return errors.New("no branch above current in the stack")
 	}
-	if len(node.Children) == 1 {
-		return gitx.Checkout(node.Children[0].Name)
+
+	var dest string
+	if len(candidates) == 1 {
+		dest = candidates[0]
+	} else {
+		title := fmt.Sprintf("Up %d from %s — pick a destination", depth, current)
+		choice, err := pickOrErr(candidates, title, len(candidates), current)
+		if err != nil {
+			return err
+		}
+		if choice == "" {
+			return nil // user canceled
+		}
+		dest = choice
 	}
-	names := make([]string, len(node.Children))
-	for i, c := range node.Children {
-		names[i] = c.Name
-	}
-	choice, err := pickOrErr(names, fmt.Sprintf("Up from %s — pick a child", current), len(node.Children), current)
-	if err != nil {
+
+	if err := gitx.Checkout(dest); err != nil {
 		return err
 	}
-	if choice == "" {
-		return nil // canceled
+	if depth < n {
+		fmt.Printf("(only moved %d of %d — no branches at distance %d)\n", depth, n, n)
 	}
-	return gitx.Checkout(choice)
+	return nil
+}
+
+// candidatesAtDepth returns the set of branches reachable in exactly n hops up
+// from `from`. If a path runs out of children before reaching depth n, the
+// deepest reachable frontier is returned with `depth < n` so callers can offer
+// a partial move.
+//
+// The key property this enables: if only one branch is reachable at the
+// requested distance, we auto-navigate there without asking the user to pick
+// through intermediate forks that are ambiguous now but converge to one
+// answer at depth n.
+func candidatesAtDepth(s *stack.Stack, from string, n int) (frontier []string, depth int) {
+	frontier = []string{from}
+	for i := 0; i < n; i++ {
+		var next []string
+		for _, name := range frontier {
+			node, ok := s.All[name]
+			if !ok {
+				continue
+			}
+			for _, c := range node.Children {
+				next = append(next, c.Name)
+			}
+		}
+		if len(next) == 0 {
+			if i == 0 {
+				return nil, 0
+			}
+			sort.Strings(frontier)
+			return frontier, i
+		}
+		frontier = next
+	}
+	sort.Strings(frontier)
+	return frontier, n
 }
 
 func runDown(cmd *cobra.Command, args []string) error {
+	n, err := parseHopCount(args)
+	if err != nil {
+		return err
+	}
 	s, current, cfg, err := loadStackAndCurrent()
 	if err != nil {
 		return err
 	}
-	node, ok := s.All[current]
-	if !ok || node.Parent == "" {
+	dest, moved := planDown(s, current, n, cfg.Trunk)
+	if moved == 0 {
 		if current == cfg.Trunk {
 			return errors.New("already at trunk")
 		}
 		return errors.New("current branch is not tracked (no parent to move down to)")
 	}
-	return gitx.Checkout(node.Parent)
+	if err := gitx.Checkout(dest); err != nil {
+		return err
+	}
+	if moved < n {
+		fmt.Printf("(only moved %d of %d — %s is trunk)\n", moved, n, dest)
+	}
+	return nil
+}
+
+// planDown walks up to n hops toward trunk. Stops at trunk (inclusive) or at
+// an untracked branch.
+func planDown(s *stack.Stack, from string, n int, trunk string) (dest string, moved int) {
+	dest = from
+	for i := 0; i < n; i++ {
+		if dest == trunk {
+			return dest, moved
+		}
+		node, ok := s.All[dest]
+		if !ok || node.Parent == "" {
+			return dest, moved
+		}
+		dest = node.Parent
+		moved++
+	}
+	return dest, moved
 }
 
 func runTop(cmd *cobra.Command, args []string) error {

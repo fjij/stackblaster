@@ -340,6 +340,206 @@ func buildFork(t *testing.T, r *testutil.Repo) (a, b, c string) {
 	return
 }
 
+func TestNav_UpNHops(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+
+	// main → A → B → C (linear)
+	for _, f := range []string{"a.txt", "b.txt", "c.txt"} {
+		r.WriteFile(f, f+"\n")
+		r.MustGit("add", f)
+		mustCreate(t, f)
+	}
+	// Currently on C (top). Go all the way to main.
+	if err := gitx.Checkout("main"); err != nil {
+		t.Fatal(err)
+	}
+
+	// `sb up 3` from main → should land on C.
+	resetFlags()
+	if err := runUp(nil, []string{"3"}); err != nil {
+		t.Fatalf("up 3: %v", err)
+	}
+	cur, _ := gitx.CurrentBranch()
+	if !strings.Contains(cur, "c-txt") {
+		t.Fatalf("up 3: expected to land on c, got %s", cur)
+	}
+}
+
+func TestNav_UpOvershoot(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+
+	// main → A (only 1 branch above main)
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	_ = mustCreate(t, "a")
+	if err := gitx.Checkout("main"); err != nil {
+		t.Fatal(err)
+	}
+
+	// `sb up 5` from main → should stop at A (1 hop) and print a note.
+	resetFlags()
+	if err := runUp(nil, []string{"5"}); err != nil {
+		t.Fatalf("up 5: %v", err)
+	}
+	cur, _ := gitx.CurrentBranch()
+	if !strings.Contains(cur, "a") {
+		t.Fatalf("up 5: expected to stop at A, got %s", cur)
+	}
+}
+
+func TestNav_DownNHops(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+
+	// main → A → B → C
+	for _, f := range []string{"a.txt", "b.txt", "c.txt"} {
+		r.WriteFile(f, f+"\n")
+		r.MustGit("add", f)
+		mustCreate(t, f)
+	}
+	// Currently on C.
+
+	// `sb down 2` → should land on A.
+	resetFlags()
+	if err := runDown(nil, []string{"2"}); err != nil {
+		t.Fatalf("down 2: %v", err)
+	}
+	cur, _ := gitx.CurrentBranch()
+	if !strings.Contains(cur, "a-txt") {
+		t.Fatalf("down 2: expected to land on A, got %s", cur)
+	}
+
+	// `sb down 10` → should stop at main.
+	resetFlags()
+	if err := runDown(nil, []string{"10"}); err != nil {
+		t.Fatalf("down 10: %v", err)
+	}
+	cur, _ = gitx.CurrentBranch()
+	if cur != "main" {
+		t.Fatalf("down 10: expected to stop at main, got %s", cur)
+	}
+}
+
+func TestNav_ParseHopCount(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    []string
+		want    int
+		wantErr string
+	}{
+		{"no arg → 1", nil, 1, ""},
+		{"3", []string{"3"}, 3, ""},
+		{"0 → error", []string{"0"}, 0, "at least 1"},
+		{"negative → error", []string{"-2"}, 0, "at least 1"},
+		{"non-int → error", []string{"abc"}, 0, "positive integer"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseHopCount(tc.args)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error, got %d", got)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected error to contain %q, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("expected %d, got %d", tc.want, got)
+			}
+		})
+	}
+}
+
+// TestNav_UpNUniqueSkipsPicker exercises the BFS shortcut: if exactly one
+// branch lives at the requested distance, sb up N goes there without any
+// picker interaction (even if there was a fork along the way).
+func TestNav_UpNUniqueSkipsPicker(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+
+	// Tree:
+	//   main → A → B
+	//   main → C
+	// From main, sb up 2 should go to B (unique at distance 2). C at distance
+	// 1 is not a valid distance-2 destination, so no picker.
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	branchA := mustCreate(t, "a")
+	r.WriteFile("b.txt", "b\n")
+	r.MustGit("add", "b.txt")
+	branchB := mustCreate(t, "b")
+
+	if err := gitx.Checkout("main"); err != nil {
+		t.Fatal(err)
+	}
+	r.WriteFile("c.txt", "c\n")
+	r.MustGit("add", "c.txt")
+	_ = mustCreate(t, "c")
+
+	if err := gitx.Checkout("main"); err != nil {
+		t.Fatal(err)
+	}
+	_ = branchA
+
+	resetFlags()
+	if err := runUp(nil, []string{"2"}); err != nil {
+		t.Fatalf("up 2: %v", err)
+	}
+	cur, _ := gitx.CurrentBranch()
+	if cur != branchB {
+		t.Fatalf("expected to land on %s, got %s", branchB, cur)
+	}
+}
+
+// TestNav_UpNMultipleErrorsInNonTTY: when N-distance has multiple candidates,
+// the picker fires. In non-TTY (go test), that surfaces as an error mentioning
+// `sb checkout`.
+func TestNav_UpNMultipleErrorsInNonTTY(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+
+	// Tree:
+	//   main → A → B
+	//   main → C → D
+	// From main, sb up 2 → both B and D are at distance 2 → picker needed.
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	_ = mustCreate(t, "a")
+	r.WriteFile("b.txt", "b\n")
+	r.MustGit("add", "b.txt")
+	_ = mustCreate(t, "b")
+
+	if err := gitx.Checkout("main"); err != nil {
+		t.Fatal(err)
+	}
+	r.WriteFile("c.txt", "c\n")
+	r.MustGit("add", "c.txt")
+	_ = mustCreate(t, "c")
+	r.WriteFile("d.txt", "d\n")
+	r.MustGit("add", "d.txt")
+	_ = mustCreate(t, "d")
+
+	if err := gitx.Checkout("main"); err != nil {
+		t.Fatal(err)
+	}
+
+	resetFlags()
+	err := runUp(nil, []string{"2"})
+	if err == nil {
+		t.Fatal("expected non-TTY picker error at up 2 with two branches at distance 2")
+	}
+	if !strings.Contains(err.Error(), "sb checkout") {
+		t.Fatalf("expected error to point to sb checkout, got: %v", err)
+	}
+}
+
 func TestNav_UpForkErrorsInNonTTY(t *testing.T) {
 	r := testutil.NewRepo(t)
 	silenceStdout(t)

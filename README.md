@@ -78,7 +78,7 @@ $ sb log
 | `sb continue`            | Resume after resolving a rebase conflict. |
 | `sb log [--all]`         | Print the full stack tree (rooted at trunk). `--all` also lists untracked and orphaned branches. |
 | `sb checkout` / `sb co`  | Interactive branch picker (Bubble Tea). |
-| `sb up` · `sb down` · `sb top` · `sb bottom` | Navigate the stack. |
+| `sb up [N]` · `sb down [N]` · `sb top` · `sb bottom` | Navigate the stack. Pass N to hop multiple branches; `up`/`down` prompt via picker at forks. |
 | `sb track [--parent BRANCH]` · `sb untrack` | Adopt or drop existing branches. Omit `--parent` in a TTY for a picker. |
 | `sb restack`             | Rebase descendants of the current branch onto its tip. |
 
