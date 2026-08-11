@@ -15,8 +15,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -64,6 +67,16 @@ func main() {
 		default:
 			os.Exit(1)
 		}
+	case "repo":
+		if len(args) >= 2 && args[1] == "view" {
+			// Return a fixed owner/repo. sb only cares that -q ".owner.login+…"
+			// produces a well-formed "owner/name" string.
+			fmt.Println("fake/fake")
+			return
+		}
+		os.Exit(1)
+	case "api":
+		handleAPI(args[1:])
 	default:
 		os.Exit(1)
 	}
@@ -181,4 +194,202 @@ func handlePRList(_ []string) {
 			fmt.Println(b)
 		}
 	}
+}
+
+// --- gh api handling -----------------------------------------------------
+//
+// sb calls `gh api …` for the Stacked PRs REST endpoints. We recognize:
+//   GET  repos/{owner}/{repo}/stacks?pull_request=N   → list (empty by default)
+//   POST repos/{owner}/{repo}/stacks                   → create stack
+//   POST repos/{owner}/{repo}/stacks/{n}/add           → append to stack
+//
+// State lives in $GH_STUB_STACKS_DIR/state.json.
+
+type stackWire struct {
+	Number       int              `json:"number"`
+	PullRequests []stackPRWireItem `json:"pull_requests"`
+}
+
+type stackPRWireItem struct {
+	Number int `json:"number"`
+}
+
+type stackStateFile struct {
+	Next   int         `json:"next"`
+	Stacks []stackWire `json:"stacks"`
+}
+
+func stacksStatePath() string {
+	d := os.Getenv("GH_STUB_STACKS_DIR")
+	if d == "" {
+		d = filepath.Join(os.TempDir(), "gh-stub-stacks")
+	}
+	_ = os.MkdirAll(d, 0o755)
+	return filepath.Join(d, "state.json")
+}
+
+func loadStacksState() *stackStateFile {
+	data, err := os.ReadFile(stacksStatePath())
+	if err != nil {
+		return &stackStateFile{Next: 1}
+	}
+	var s stackStateFile
+	if err := json.Unmarshal(data, &s); err != nil {
+		return &stackStateFile{Next: 1}
+	}
+	if s.Next == 0 {
+		s.Next = 1
+	}
+	return &s
+}
+
+func saveStacksState(s *stackStateFile) {
+	b, _ := json.MarshalIndent(s, "", "  ")
+	_ = os.WriteFile(stacksStatePath(), b, 0o644)
+}
+
+// stackPathRe matches:
+//   repos/OWNER/REPO/stacks
+//   repos/OWNER/REPO/stacks?pull_request=N
+//   repos/OWNER/REPO/stacks/N
+//   repos/OWNER/REPO/stacks/N/add
+//   repos/OWNER/REPO/stacks/N/unstack
+var stackPathRe = regexp.MustCompile(`^repos/[^/]+/[^/]+/stacks(?:/(\d+)(?:/(add|unstack))?)?(?:\?pull_request=(\d+))?$`)
+
+func handleAPI(args []string) {
+	method := "GET"
+	inputFromStdin := false
+	var path string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--method", "-X":
+			if i+1 < len(args) {
+				method = strings.ToUpper(args[i+1])
+				i++
+			}
+		case "-H", "--header":
+			// Skip the header value.
+			if i+1 < len(args) {
+				i++
+			}
+		case "--input":
+			if i+1 < len(args) && args[i+1] == "-" {
+				inputFromStdin = true
+				i++
+			}
+		case "-f", "-F", "--field":
+			// Skip typed field value; we don't parse them.
+			if i+1 < len(args) {
+				i++
+			}
+		default:
+			if !strings.HasPrefix(args[i], "-") && path == "" {
+				path = args[i]
+			}
+		}
+	}
+	if path == "" {
+		os.Exit(1)
+	}
+
+	m := stackPathRe.FindStringSubmatch(path)
+	if m == nil {
+		// Unknown endpoint. Return an empty JSON object so callers don't crash.
+		fmt.Println("{}")
+		return
+	}
+	stackNumFromPath := m[1]
+	action := m[2]
+	prFilter := m[3]
+
+	state := loadStacksState()
+
+	// Read POST body if provided.
+	var body map[string]any
+	if inputFromStdin {
+		raw, _ := io.ReadAll(os.Stdin)
+		_ = json.Unmarshal(raw, &body)
+	}
+
+	switch {
+	case method == "GET" && stackNumFromPath == "":
+		// List stacks (possibly filtered by pull_request).
+		var out []stackWire
+		if prFilter != "" {
+			pr, _ := strconv.Atoi(prFilter)
+			for _, s := range state.Stacks {
+				for _, p := range s.PullRequests {
+					if p.Number == pr {
+						out = append(out, s)
+						break
+					}
+				}
+			}
+		} else {
+			out = state.Stacks
+		}
+		if out == nil {
+			out = []stackWire{}
+		}
+		b, _ := json.Marshal(out)
+		os.Stdout.Write(b)
+	case method == "POST" && stackNumFromPath == "" && action == "":
+		// Create stack.
+		prs := extractPRList(body)
+		s := stackWire{Number: state.Next, PullRequests: prsToItems(prs)}
+		state.Next++
+		state.Stacks = append(state.Stacks, s)
+		saveStacksState(state)
+		b, _ := json.Marshal(s)
+		os.Stdout.Write(b)
+	case method == "POST" && stackNumFromPath != "" && action == "add":
+		// Add PRs to an existing stack.
+		n, _ := strconv.Atoi(stackNumFromPath)
+		prs := extractPRList(body)
+		updated := false
+		for i, s := range state.Stacks {
+			if s.Number == n {
+				existing := s.PullRequests
+				existing = append(existing, prsToItems(prs)...)
+				state.Stacks[i].PullRequests = existing
+				saveStacksState(state)
+				b, _ := json.Marshal(state.Stacks[i])
+				os.Stdout.Write(b)
+				updated = true
+				break
+			}
+		}
+		if !updated {
+			fmt.Fprintln(os.Stderr, "HTTP 404: stack not found")
+			os.Exit(1)
+		}
+	default:
+		fmt.Fprintln(os.Stderr, "HTTP 404: unhandled path in stub")
+		os.Exit(1)
+	}
+}
+
+func extractPRList(body map[string]any) []int {
+	raw, ok := body["pull_requests"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]int, 0, len(raw))
+	for _, v := range raw {
+		switch n := v.(type) {
+		case float64:
+			out = append(out, int(n))
+		case int:
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+func prsToItems(prs []int) []stackPRWireItem {
+	out := make([]stackPRWireItem, len(prs))
+	for i, n := range prs {
+		out[i] = stackPRWireItem{Number: n}
+	}
+	return out
 }

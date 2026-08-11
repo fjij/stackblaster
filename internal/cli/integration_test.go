@@ -29,6 +29,7 @@ func resetFlags() {
 	submitDryRun = false
 	submitTitle = ""
 	submitBodyFile = ""
+	submitNoStack = false
 }
 
 // silenceStdout redirects os.Stdout to /dev/null for the duration of a test —

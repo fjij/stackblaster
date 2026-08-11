@@ -188,6 +188,72 @@ func TestSync_PrunesBranchDeletedFromOrigin(t *testing.T) {
 	}
 }
 
+// TestSubmit_LinksStackOnGitHub verifies that submit, after creating PRs for
+// a 2+ branch stack, calls the /stacks REST endpoint to register them as a
+// stack on GitHub.
+func TestSubmit_LinksStackOnGitHub(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+	testutil.SetupBareOrigin(t, r)
+	gh := testutil.SetupGhStub(t)
+
+	// main → A → B
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	_ = mustCreate(t, "a")
+	r.WriteFile("b.txt", "b\n")
+	r.MustGit("add", "b.txt")
+	_ = mustCreate(t, "b")
+
+	resetFlags()
+	if err := runSubmit(nil, nil); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	// Expect a POST to /stacks with both PRs.
+	found := false
+	for _, argv := range gh.Calls() {
+		if len(argv) < 2 || argv[0] != "api" {
+			continue
+		}
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "--method POST") && strings.Contains(joined, "repos/fake/fake/stacks") && !strings.Contains(joined, "?pull_request=") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a POST /repos/fake/fake/stacks call; got log:\n%s", gh.ReadLog())
+	}
+}
+
+// TestSubmit_NoStackFlagSkipsLinking verifies that --no-stack suppresses the
+// stack-linking API calls entirely.
+func TestSubmit_NoStackFlagSkipsLinking(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+	testutil.SetupBareOrigin(t, r)
+	gh := testutil.SetupGhStub(t)
+
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	_ = mustCreate(t, "a")
+	r.WriteFile("b.txt", "b\n")
+	r.MustGit("add", "b.txt")
+	_ = mustCreate(t, "b")
+
+	resetFlags()
+	submitNoStack = true
+	if err := runSubmit(nil, nil); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	for _, argv := range gh.Calls() {
+		if len(argv) >= 2 && argv[0] == "api" && strings.Contains(strings.Join(argv, " "), "/stacks") {
+			t.Fatalf("expected no /stacks calls under --no-stack, got: %v", argv)
+		}
+	}
+}
+
 // TestSync_PrunesCurrentBranchByHoppingToTrunk covers the case where the
 // branch we're actively on is the one that needs pruning. Sync should hop
 // to trunk first and then delete the branch, rather than skipping it.
