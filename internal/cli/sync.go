@@ -187,6 +187,29 @@ func pruneStale(s *stack.Stack, trunk, current string) error {
 	if len(toDelete) == 0 {
 		return nil
 	}
+	// Before deleting anything, reparent every tracked child of a doomed
+	// branch so we don't leave orphans in the tree. A child's new parent is
+	// the first non-doomed ancestor walking up sbParent — usually just the
+	// doomed branch's own sbParent, but if two branches in a row are being
+	// pruned we skip over both.
+	for b := range toDelete {
+		node := s.All[b]
+		if node == nil {
+			continue
+		}
+		newParent := resolveSurvivor(s, node.Parent, toDelete, trunk)
+		for _, child := range node.Children {
+			if _, alsoDoomed := toDelete[child.Name]; alsoDoomed {
+				continue // child is going away too; nothing to reparent
+			}
+			if err := gitx.SetConfig("branch."+child.Name+".sbParent", newParent); err != nil {
+				fmt.Printf("(couldn't reparent %s → %s: %v)\n", child.Name, newParent, err)
+				continue
+			}
+			fmt.Printf("↔ reparented %s: %s → %s\n", child.Name, b, newParent)
+		}
+	}
+
 	// If we're about to prune the currently checked-out branch, hop to trunk
 	// first so the delete can proceed. Git won't let us delete the branch
 	// we're on.
@@ -206,6 +229,26 @@ func pruneStale(s *stack.Stack, trunk, current string) error {
 		fmt.Printf("✂  pruned %s (%s)\n", b, reason)
 	}
 	return nil
+}
+
+// resolveSurvivor walks up the sbParent chain from `start` and returns the
+// first branch not in `doomed`. Falls back to `trunk` if we walk off the
+// tree or the whole chain is doomed.
+func resolveSurvivor(s *stack.Stack, start string, doomed map[string]string, trunk string) string {
+	name := start
+	seen := map[string]bool{}
+	for name != "" && !seen[name] {
+		if _, isDoomed := doomed[name]; !isDoomed {
+			return name
+		}
+		seen[name] = true
+		node, ok := s.All[name]
+		if !ok {
+			break
+		}
+		name = node.Parent
+	}
+	return trunk
 }
 
 // mergedBranches returns the subset of `branches` whose PRs are in MERGED state
