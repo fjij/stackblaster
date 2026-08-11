@@ -2,7 +2,8 @@
 
 Extended notes that don't fit in the top-level README.
 
-Coming soon in follow-up PRs:
+- [Using `sb` from AI agents](agents.md)
 
-- Using `sb` from AI agents
+Coming soon:
+
 - FAQ
