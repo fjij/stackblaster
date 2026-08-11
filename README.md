@@ -4,7 +4,7 @@
 
 No cloud. No daemon. No account. Just `git`, `gh`, and opinions.
 
-**Status:** early WIP. `sb create` and `sb log` work; the rest is scaffolded.
+**Status:** early WIP. All core commands (`create`, `modify`, `move`, `submit`, `sync`, `continue`, `log`, `checkout`, nav, `track`/`untrack`) work in a temp-repo integration suite. Real-world use is untested.
 
 ## Why another stacking tool?
 
@@ -60,18 +60,19 @@ $ sb log
 
 ## Commands
 
-| Command | Status | Notes |
-|---|---|---|
-| `sb create [-m MSG]`     | ✅ working | New branch stacked on current; commits staged changes. |
-| `sb log`                 | ✅ working | Print the stack tree. |
-| `sb modify [-m MSG]`     | ⏳ stub | Amend the current branch's commit; auto-restack children; force-push. |
-| `sb submit [--ready]`    | ⏳ stub | Push the stack; open or update PRs via `gh stack`. Drafts by default. |
-| `sb sync`                | ⏳ stub | Fetch trunk; rebase the stack; prune branches whose PRs merged. |
-| `sb continue`            | ⏳ stub | Resume after resolving a rebase conflict. |
-| `sb checkout` / `sb co`  | ⏳ stub | Interactive branch picker (Bubble Tea). |
-| `sb up` · `sb down` · `sb top` · `sb bottom` | ⏳ stub | Navigate the stack. |
-| `sb track` · `sb untrack` | ⏳ stub | Adopt or drop existing branches. |
-| `sb restack`             | ⏳ stub | Rebase children of the current branch onto it. |
+| Command | Notes |
+|---|---|
+| `sb create [-m MSG]`     | New branch stacked on current; commits staged changes as one commit. |
+| `sb modify [-m MSG]`     | Amend the current branch's tip; auto-restack descendants; force-push-with-lease. |
+| `sb move --onto TARGET`  | Change current branch's parent to TARGET, rebase, restack descendants. |
+| `sb submit [--ready]`    | Push the stack; open a PR for each branch or retarget its base. Drafts by default. |
+| `sb sync [--no-prune]`   | Fetch, fast-forward trunk, restack the tree, prune merged branches. |
+| `sb continue`            | Resume after resolving a rebase conflict. |
+| `sb log [--all]`         | Print the stack tree. |
+| `sb checkout` / `sb co`  | Interactive branch picker (Bubble Tea). |
+| `sb up` · `sb down` · `sb top` · `sb bottom` | Navigate the stack. |
+| `sb track` · `sb untrack` | Adopt or drop existing branches. |
+| `sb restack`             | Rebase descendants of the current branch onto its tip. |
 
 Run `sb <cmd> --help` for details.
 
