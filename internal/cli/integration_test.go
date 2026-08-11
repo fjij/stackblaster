@@ -17,7 +17,6 @@ import (
 func resetFlags() {
 	createMsg = ""
 	modifyMsg = ""
-	modifyNoPush = false
 	modifyCommit = false
 	moveOnto = ""
 	trackParent = ""
@@ -106,7 +105,6 @@ func TestModify_AmendsAndRestacksChild(t *testing.T) {
 	r.MustGit("add", "a.txt")
 	oldA := r.Head(branchA)
 	resetFlags()
-	modifyNoPush = true // no remote in test
 	if err := runModify(nil, nil); err != nil {
 		t.Fatalf("modify: %v", err)
 	}
@@ -418,7 +416,6 @@ func TestModify_PersistsPlanOnConflict(t *testing.T) {
 	r.MustGit("add", "file.txt")
 
 	resetFlags()
-	modifyNoPush = true
 	err := runModify(nil, nil)
 	if err == nil {
 		t.Fatal("expected conflict error from modify")

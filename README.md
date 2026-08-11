@@ -19,7 +19,8 @@ I liked `gt`'s ergonomics — `create`, `modify`, `submit`, `sync` — but didn'
 
 ## 🥞 Opinions
 
-- **One commit per branch, by default.** `sb modify` amends and force-pushes with lease. The model doesn't _require_ one commit per branch — you can opt out — but the defaults assume it.
+- **One commit per branch, by default.** `sb modify` amends the tip commit. The model doesn't _require_ one commit per branch — you can opt out — but the defaults assume it.
+- **Only `sb submit` writes to the remote.** Every other command stays local, so you can restack, move, and modify freely without pushing until you're ready.
 - **Auto-named branches.** `sb create -m "fix ingest retry"` gives you `fjij/2026-08-10-fix-ingest-retry`. Prefix and date format are configurable.
 - **Drafts by default.** `sb submit` opens PRs as drafts unless `--ready`.
 - **Trunk is sacred.** `sb` never commits to `main`; it always makes a branch.
@@ -70,7 +71,7 @@ $ sb log
 | Command | Notes |
 |---|---|
 | `sb create [-m MSG]`     | New branch stacked on current; commits staged changes as one commit. |
-| `sb modify [-m MSG]`     | Amend the current branch's tip; auto-restack descendants; force-push-with-lease. |
+| `sb modify [-m MSG]`     | Amend the current branch's tip and auto-restack descendants. Local-only. |
 | `sb move --onto TARGET`  | Change current branch's parent to TARGET, rebase, restack descendants. |
 | `sb submit [--ready]`    | Push the stack; open a PR for each branch or retarget its base. Drafts by default. |
 | `sb sync [--no-prune]`   | Fetch, fast-forward trunk, restack the tree, prune merged branches. |

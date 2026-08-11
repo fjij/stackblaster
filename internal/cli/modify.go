@@ -13,16 +13,18 @@ import (
 
 var (
 	modifyMsg    string
-	modifyNoPush bool
 	modifyCommit bool
 )
 
 var modifyCmd = &cobra.Command{
 	Use:   "modify",
-	Short: "Amend the current branch's commit, restack descendants, and push",
+	Short: "Amend the current branch's commit and restack descendants",
 	Long: `Stage your changes, then run sb modify to fold them into the current
 branch's tip commit. Any descendant branches are automatically rebased onto
-the new tip. If the branch has an upstream, it is force-pushed with lease.
+the new tip.
+
+Local-only: sb modify never touches the remote. Run sb submit when you're
+ready to push.
 
 Pass -c/--commit to create a new commit instead of amending (useful if you
 prefer the multi-commit workflow — sb doesn't force single-commit branches,
@@ -33,7 +35,6 @@ it just defaults to them).`,
 func init() {
 	modifyCmd.Flags().StringVarP(&modifyMsg, "message", "m", "", "new commit message (default: reuse existing)")
 	modifyCmd.Flags().BoolVarP(&modifyCommit, "commit", "c", false, "create a new commit instead of amending")
-	modifyCmd.Flags().BoolVar(&modifyNoPush, "no-push", false, "skip force-pushing after amending")
 	rootCmd.AddCommand(modifyCmd)
 }
 
@@ -136,20 +137,6 @@ func runModify(cmd *cobra.Command, args []string) error {
 		if err := plan.Execute(); err != nil {
 			return err
 		}
-	}
-
-	// Push.
-	if modifyNoPush {
-		return nil
-	}
-	hasUp, _ := gitx.HasUpstream(current)
-	if !hasUp {
-		// No upstream — nothing to push. Not an error.
-		return nil
-	}
-	fmt.Printf("↑ force-pushing %s\n", current)
-	if err := gitx.PushForceWithLease("origin", current); err != nil {
-		return err
 	}
 	return nil
 }
