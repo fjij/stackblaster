@@ -70,17 +70,40 @@ func runModify(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// If this branch has no commits of its own (its HEAD is still equal to
+	// the sbParent's HEAD), amending would rewrite the parent's commit —
+	// which is wrong. Force a new commit instead. Matches gt's behavior.
+	parentBranch, _ := gitx.GetConfig("branch." + current + ".sbParent")
+	branchIsEmpty := false
+	if parentBranch != "" {
+		if parentSha, err := gitx.HeadSha(parentBranch); err == nil && parentSha == oldSha {
+			branchIsEmpty = true
+		}
+	}
+
 	// Commit or amend.
-	if modifyCommit {
+	if modifyCommit || branchIsEmpty {
 		if !staged {
+			if branchIsEmpty {
+				return errors.New("branch has no commits yet — stage changes first (e.g. `git add -p`)")
+			}
 			return errors.New("--commit given but nothing is staged")
 		}
 		msg := modifyMsg
+		if msg == "" && branchIsEmpty {
+			// Fall back to the message the user passed to `sb create`.
+			msg, _ = gitx.GetConfig("branch." + current + ".sbCreateMessage")
+		}
 		if msg == "" {
 			msg = "wip"
 		}
 		if err := gitx.Commit(msg); err != nil {
 			return err
+		}
+		if branchIsEmpty {
+			// One-shot fallback — clear it so future modifies don't reuse a
+			// stale message.
+			_ = gitx.UnsetConfig("branch." + current + ".sbCreateMessage")
 		}
 	} else {
 		if modifyMsg != "" {

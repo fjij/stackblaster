@@ -74,6 +74,10 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		fmt.Printf("✓ Created %s (off %s)\n", name, parent)
 		fmt.Printf("✓ Committed %d file(s)\n", count)
 	} else {
+		// No commit yet — stash the intended message so `sb modify` can use
+		// it when it makes the first commit on this branch. Non-fatal on
+		// failure; falling back to "wip" is acceptable.
+		_ = gitx.SetConfig("branch."+name+".sbCreateMessage", createMsg)
 		fmt.Printf("✓ Created %s (off %s) — no staged changes, branch is empty\n", name, parent)
 		fmt.Println("  (stage changes with `git add`, then `sb modify`)")
 	}

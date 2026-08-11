@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -638,6 +639,178 @@ func TestCollectLeaves(t *testing.T) {
 	if !got[branchB] || !got[branchC] {
 		t.Fatalf("expected leaves %s and %s, got %v", branchB, branchC, leaves)
 	}
+}
+
+// TestModify_CreatesFirstCommitOnEmptyBranch: after `sb create` without any
+// staged changes, `sb modify` should create a new commit (not amend the
+// parent's commit) once changes are staged. Uses the stored sbCreateMessage
+// as the default commit message.
+func TestModify_CreatesFirstCommitOnEmptyBranch(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+
+	// Capture main's initial HEAD.
+	mainInitial := r.Head("main")
+
+	// sb create with no staged changes — branch is created but has no commit.
+	resetFlags()
+	createMsg = "add retry"
+	if err := runCreate(nil, nil); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	branch, _ := gitx.CurrentBranch()
+	if r.Head(branch) != mainInitial {
+		t.Fatalf("expected empty branch to point at main's HEAD, got %s vs %s",
+			r.Head(branch), mainInitial)
+	}
+	// The intended message must have been stashed.
+	stored, _ := gitx.GetConfig("branch." + branch + ".sbCreateMessage")
+	if stored != "add retry" {
+		t.Fatalf("expected stashed message 'add retry', got %q", stored)
+	}
+
+	// Now stage a change and run sb modify.
+	r.WriteFile("retry.go", "// retry\n")
+	r.MustGit("add", "retry.go")
+
+	resetFlags()
+	if err := runModify(nil, nil); err != nil {
+		t.Fatalf("modify: %v", err)
+	}
+
+	// The branch must now have its own commit, and main must be unchanged.
+	if r.Head("main") != mainInitial {
+		t.Fatal("modify wrote to main's tip — should have created a new commit on the branch")
+	}
+	if r.Head(branch) == mainInitial {
+		t.Fatal("branch HEAD didn't advance — no new commit was made")
+	}
+	// The new commit's parent must be main's tip.
+	if r.Head(branch+"^") != mainInitial {
+		t.Fatalf("new commit's parent should be main (%s), got %s",
+			mainInitial, r.Head(branch+"^"))
+	}
+	// The stashed message must have been consumed (unset after use).
+	stored, _ = gitx.GetConfig("branch." + branch + ".sbCreateMessage")
+	if stored != "" {
+		t.Fatalf("expected stashed message to be cleared, still have %q", stored)
+	}
+	// Commit message should be the stashed create message.
+	subj, _ := gitLogFormat(branch, "%s")
+	if subj != "add retry" {
+		t.Fatalf("expected commit subject 'add retry', got %q", subj)
+	}
+}
+
+// TestModify_EmptyBranchWithNothingStagedErrors: modify on an empty branch
+// with nothing staged should error clearly rather than silently succeeding.
+func TestModify_EmptyBranchWithNothingStagedErrors(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+	_ = r
+
+	resetFlags()
+	createMsg = "add retry"
+	if err := runCreate(nil, nil); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	resetFlags()
+	// Pass an -m so we get past the "no staged and no -m" pre-check and
+	// exercise the "empty branch but nothing staged" branch.
+	modifyMsg = "attempted"
+	err := runModify(nil, nil)
+	if err == nil {
+		t.Fatal("expected error when modifying an empty branch with nothing staged")
+	}
+	if !strings.Contains(err.Error(), "no commits yet") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestLog_ThreeSiblingsRenderSeparately: with three children of trunk, the
+// tree renderer must emit two rejoin markers (one per non-primary sibling),
+// otherwise adjacent siblings would look like a linear parent→child pair.
+func TestLog_ThreeSiblingsRenderSeparately(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+
+	// Build three sibling branches all off main.
+	for _, name := range []string{"a", "b", "c"} {
+		if err := gitx.Checkout("main"); err != nil {
+			t.Fatal(err)
+		}
+		r.WriteFile(name+".txt", name+"\n")
+		r.MustGit("add", name+".txt")
+		resetFlags()
+		createMsg = name
+		if err := runCreate(nil, nil); err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+	}
+
+	// Capture sb log output.
+	if err := gitx.Checkout("main"); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		resetFlags()
+		if err := runLog(nil, nil); err != nil {
+			t.Fatalf("log: %v", err)
+		}
+	})
+	// Strip ANSI so we can assert on structure.
+	plain := stripANSI(out)
+
+	// Expect 2 rejoin markers (one per non-primary sibling in a 3-child fork).
+	rejoins := strings.Count(plain, "├──┘")
+	if rejoins != 2 {
+		t.Fatalf("expected 2 ├──┘ markers for 3 siblings, got %d\noutput:\n%s", rejoins, plain)
+	}
+	// All three branches must appear.
+	for _, name := range []string{"a", "b", "c"} {
+		suffix := "-" + name
+		if !strings.Contains(plain, suffix) {
+			t.Errorf("expected branch containing %q in output, got:\n%s", suffix, plain)
+		}
+	}
+}
+
+// captureStdout runs `fn` with os.Stdout redirected to a pipe and returns
+// what was written. Used by rendering tests.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	done := make(chan string)
+	go func() {
+		var buf strings.Builder
+		b := make([]byte, 4096)
+		for {
+			n, err := r.Read(b)
+			if n > 0 {
+				buf.Write(b[:n])
+			}
+			if err != nil {
+				break
+			}
+		}
+		done <- buf.String()
+	}()
+	fn()
+	w.Close()
+	os.Stdout = orig
+	return <-done
+}
+
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func stripANSI(s string) string {
+	return ansiRe.ReplaceAllString(s, "")
 }
 
 func TestContinue_ResolvesConflictAndFinishesPlan(t *testing.T) {

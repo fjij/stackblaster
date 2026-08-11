@@ -102,11 +102,19 @@ func renderSubtree(b *strings.Builder, n *stack.Node, indent string, isRoot bool
 		fmt.Fprintln(b, indent+conn())
 
 		subIndent := indent + structStyle.Render("│  ")
-		for _, c := range others {
+		// Each non-primary sibling gets its own opened-and-closed sub-track:
+		// render the sibling's subtree at subIndent, then a rejoin marker,
+		// then (if more siblings follow) trunk's │ continuing before the
+		// next sub-track opens. This keeps adjacent siblings visually
+		// distinct instead of stacking them like a linear chain.
+		for i, c := range others {
 			renderSubtree(b, c, subIndent, false, current)
 			fmt.Fprintln(b, subIndent+conn())
+			fmt.Fprintln(b, indent+structStyle.Render("├──┘"))
+			if i < len(others)-1 {
+				fmt.Fprintln(b, indent+conn())
+			}
 		}
-		fmt.Fprintln(b, indent+structStyle.Render("├──┘"))
 	}
 
 	// The node itself.
