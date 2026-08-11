@@ -1,23 +1,30 @@
-# stackblaster · `sb`
+# 🥞 stackblaster · `sb`
 
-> A [Graphite](https://graphite.dev)-flavored CLI for stacked pull requests, backed by plain `git` and GitHub's native [stacked PRs](https://docs.github.com/en/pull-requests/how-tos/stacked-pull-requests).
+> A [Graphite](https://graphite.dev)-flavored CLI for stacked pull requests, backed by plain `git` and GitHub's native [stacked PRs](https://docs.github.com/en/pull-requests/how-tos/stacked-pull-requests). Stack 'em high, ship 'em hot. 🥞
 
-No cloud. No daemon. No account. Just `git`, `gh`, and opinions.
+No cloud. No daemon. No account. Just `git`, `gh`, and short stacks.
+
+```
+    🥞  ← top of stack (your latest change)
+    🥞
+    🥞  ← bottom (just above trunk)
+   ═══  main
+```
 
 **Status:** early WIP. All core commands (`create`, `modify`, `move`, `submit`, `sync`, `continue`, `log`, `checkout`, nav, `track`/`untrack`) work in a temp-repo integration suite. Real-world use is untested.
 
-## Why another stacking tool?
+## 🥞 Why another stacking tool?
 
 I liked `gt`'s ergonomics — `create`, `modify`, `submit`, `sync` — but didn't want the SaaS. GitHub finally shipped first-class stacked PRs, so the server side is solved. `sb` is the missing local half: a small Go binary that drives `git` and `gh` the way `gt` drives its own backend.
 
-## Opinions
+## 🥞 Opinions
 
 - **One commit per branch, by default.** `sb modify` amends and force-pushes with lease. The model doesn't _require_ one commit per branch — you can opt out — but the defaults assume it.
 - **Auto-named branches.** `sb create -m "fix ingest retry"` gives you `wharris/2026-08-10-fix-ingest-retry`. Prefix and date format are configurable.
 - **Drafts by default.** `sb submit` opens PRs as drafts unless `--ready`.
 - **Trunk is sacred.** `sb` never commits to `main`; it always makes a branch.
 
-## Install
+## 🥞 Install
 
 ```sh
 go install github.com/fjij/stackblaster@latest
@@ -30,7 +37,7 @@ Requires:
 
 `sb` will print a helpful error if either is missing or misconfigured.
 
-## Quick start
+## 🥞 Quick start
 
 ```sh
 $ sb create -m "add retry to ingest"
@@ -58,7 +65,7 @@ $ sb log
 ◇ main
 ```
 
-## Commands
+## 🥞 Commands
 
 | Command | Notes |
 |---|---|
@@ -95,7 +102,7 @@ Note the two names sb reuses from git with different meaning:
 - `sb checkout` with no args opens a picker over the current stack.
   With a branch name, it behaves like `git checkout <branch>`.
 
-## Configuration
+## 🥞 Configuration
 
 sb reads TOML from two files and merges them in this order (later wins):
 
@@ -133,7 +140,7 @@ There is intentionally no `sb config` sub-command — edit the file
 directly. The defaults are chosen so an empty config works; the one you
 almost certainly want to set is `branch_prefix`.
 
-## How it works
+## 🥞 How it works
 
 `sb` is a thin orchestrator:
 
@@ -143,14 +150,14 @@ almost certainly want to set is `branch_prefix`.
 
 There is no server, no lockfile, and no state you can't inspect with `git config --list`.
 
-## Non-goals
+## 🥞 Non-goals
 
 - Merging PRs. GitHub's UI + branch protection rules already do this.
 - Enforcing single-commit branches. It's the default, not a hard rule.
 - Cross-repo or cross-fork stacks.
 - Anything requiring a login besides `gh auth login`.
 
-## Development
+## 🥞 Development
 
 There's a Nix flake with a devshell that provides `go`, `gopls`, `gotools`,
 and `delve`:
@@ -171,6 +178,6 @@ direnv allow
 
 Or bring your own toolchain — anything with `go` ≥ 1.25 works.
 
-## License
+## 🥞 License
 
 MIT — see [LICENSE](LICENSE).
