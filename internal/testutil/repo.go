@@ -38,8 +38,13 @@ func NewRepo(t *testing.T) *Repo {
 	r.MustGit("config", "user.name", "test")
 	r.MustGit("config", "commit.gpgsign", "false")
 	// Ensure rebase doesn't drop into an editor.
-	os.Setenv("GIT_SEQUENCE_EDITOR", "true")
-	os.Setenv("GIT_EDITOR", "true")
+	t.Setenv("GIT_SEQUENCE_EDITOR", "true")
+	t.Setenv("GIT_EDITOR", "true")
+	// Isolate config: don't inherit the developer's ~/.config/sb/config.toml.
+	// Point XDG_CONFIG_HOME at an empty temp dir so tests see only the
+	// built-in defaults (empty branch prefix, "main" trunk, etc.).
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
 
 	r.WriteFile("README.md", "hello\n")
 	r.MustGit("add", "README.md")

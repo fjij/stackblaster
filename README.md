@@ -73,7 +73,7 @@ $ sb log
 | `sb create [-m MSG]`     | New branch stacked on current; commits staged changes as one commit. |
 | `sb modify [-m MSG]`     | Amend the current branch's tip and auto-restack descendants. Local-only. |
 | `sb move [--onto TARGET]` | Change current branch's parent, rebase, restack descendants. Omit `--onto` in a TTY for a picker. |
-| `sb submit [--ready]`    | Push the stack; open a PR for each branch or retarget its base. Drafts by default. |
+| `sb submit [--ready] [--title X] [--body-file F]` | Push the stack; open a PR for each branch or retarget its base. Drafts by default. `--title`/`--body-file` override the current branch's PR text (other branches use their commit message). |
 | `sb sync [--no-prune]`   | Fetch, fast-forward trunk, restack the tree, prune merged branches. |
 | `sb continue`            | Resume after resolving a rebase conflict. |
 | `sb log [--all]`         | Print the full stack tree (rooted at trunk). `--all` also lists untracked and orphaned branches. |

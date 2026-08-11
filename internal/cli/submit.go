@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -15,9 +16,11 @@ import (
 )
 
 var (
-	submitReady   bool
-	submitDraft   bool
-	submitDryRun  bool
+	submitReady    bool
+	submitDraft    bool
+	submitDryRun   bool
+	submitTitle    string
+	submitBodyFile string
 )
 
 var submitCmd = &cobra.Command{
@@ -28,7 +31,12 @@ push with --force-with-lease, then create a PR if none exists, otherwise
 update its base to match the branch's sbParent.
 
 Drafts by default. Use --ready to open non-draft PRs, or --draft to force
-draft even when config sets draft_by_default = false.`,
+draft even when config sets draft_by_default = false.
+
+--title and --body-file override the PR title/body derived from the commit
+message. They apply only to the *current* branch's PR when it's being
+created for the first time; other branches in the stack use their commit-
+derived title/body, and PRs that already exist aren't touched.`,
 	RunE: runSubmit,
 }
 
@@ -36,6 +44,8 @@ func init() {
 	submitCmd.Flags().BoolVar(&submitReady, "ready", false, "open PRs as ready-for-review (overrides draft_by_default)")
 	submitCmd.Flags().BoolVar(&submitDraft, "draft", false, "force draft (overrides --ready and draft_by_default = false)")
 	submitCmd.Flags().BoolVar(&submitDryRun, "dry-run", false, "print what would happen without pushing or hitting GitHub")
+	submitCmd.Flags().StringVar(&submitTitle, "title", "", "PR title for the current branch (default: commit subject)")
+	submitCmd.Flags().StringVar(&submitBodyFile, "body-file", "", "read PR body for the current branch from this file (default: commit body)")
 	rootCmd.AddCommand(submitCmd)
 }
 
@@ -76,11 +86,28 @@ func runSubmit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("current branch %q is not tracked to trunk — run `sb track --parent %s`", current, cfg.Trunk)
 	}
 
+	// Optional per-invocation overrides for the current branch only.
+	var titleOverride, bodyOverride string
+	if submitTitle != "" {
+		titleOverride = submitTitle
+	}
+	if submitBodyFile != "" {
+		b, err := os.ReadFile(submitBodyFile)
+		if err != nil {
+			return fmt.Errorf("read --body-file: %w", err)
+		}
+		bodyOverride = string(b)
+	}
+
 	// Bottom-to-top so parents exist before children reference them.
 	draft := decideDraft(cfg, submitReady, submitDraft)
 	for _, br := range chain {
 		parent := s.All[br].Parent
-		if err := submitBranch(br, parent, draft); err != nil {
+		var titleFor, bodyFor string
+		if br == current {
+			titleFor, bodyFor = titleOverride, bodyOverride
+		}
+		if err := submitBranch(br, parent, draft, titleFor, bodyFor); err != nil {
 			return err
 		}
 	}
@@ -123,7 +150,7 @@ func chainToTrunk(s *stack.Stack, current, trunk string) ([]string, error) {
 	return nil, nil
 }
 
-func submitBranch(branch, parent string, draft bool) error {
+func submitBranch(branch, parent string, draft bool, titleOverride, bodyOverride string) error {
 	if submitDryRun {
 		fmt.Printf("• %s → PR base=%s draft=%v (dry-run)\n", branch, parent, draft)
 		return nil
@@ -141,8 +168,14 @@ func submitBranch(branch, parent string, draft bool) error {
 		return err
 	}
 	if pr == nil {
-		title := prTitleFor(branch)
-		body := prBodyFor(branch)
+		title := titleOverride
+		if title == "" {
+			title = prTitleFor(branch)
+		}
+		body := bodyOverride
+		if body == "" {
+			body = prBodyFor(branch)
+		}
 		url, err := ghx.CreatePR(ghx.CreatePROpts{
 			Head:  branch,
 			Base:  parent,

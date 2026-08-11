@@ -26,6 +26,8 @@ func resetFlags() {
 	submitReady = false
 	submitDraft = false
 	submitDryRun = false
+	submitTitle = ""
+	submitBodyFile = ""
 }
 
 // silenceStdout redirects os.Stdout to /dev/null for the duration of a test —
@@ -635,6 +637,76 @@ func TestCollectLeaves(t *testing.T) {
 	got := map[string]bool{leaves[0]: true, leaves[1]: true}
 	if !got[branchB] || !got[branchC] {
 		t.Fatalf("expected leaves %s and %s, got %v", branchB, branchC, leaves)
+	}
+}
+
+func TestContinue_ResolvesConflictAndFinishesPlan(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+
+	// main → A (file.txt=1) → B (file.txt=2)
+	r.WriteFile("file.txt", "1\n")
+	r.MustGit("add", "file.txt")
+	branchA := mustCreate(t, "a")
+	r.WriteFile("file.txt", "2\n")
+	r.MustGit("add", "file.txt")
+	branchB := mustCreate(t, "b")
+
+	// Amend A to conflict with B's edit.
+	if err := gitx.Checkout(branchA); err != nil {
+		t.Fatal(err)
+	}
+	r.WriteFile("file.txt", "999\n")
+	r.MustGit("add", "file.txt")
+
+	// modify triggers the conflict during the restack of B.
+	resetFlags()
+	if err := runModify(nil, nil); err == nil {
+		t.Fatal("expected conflict from modify")
+	}
+	if !gitx.RebaseInProgress() {
+		t.Fatal("expected rebase in progress after conflict")
+	}
+	// Plan should be persisted with B as the pending step.
+	plan, err := stack.LoadPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan == nil || len(plan.Steps) == 0 || plan.Steps[0].Branch != branchB {
+		t.Fatalf("unexpected plan state: %+v", plan)
+	}
+
+	// Simulate the user resolving the conflict.
+	r.WriteFile("file.txt", "resolved\n")
+	r.MustGit("add", "file.txt")
+
+	// sb continue should complete the rebase and drain the plan.
+	resetFlags()
+	if err := runContinue(nil, nil); err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if gitx.RebaseInProgress() {
+		t.Fatal("rebase still in progress after continue")
+	}
+	if plan, _ := stack.LoadPlan(); plan != nil {
+		t.Fatalf("expected plan to be cleared, got %+v", plan)
+	}
+
+	// The restack should have left B on the amended A tip, and B's file
+	// should contain our resolution.
+	bParent := r.Head(branchB + "^")
+	if bParent != r.Head(branchA) {
+		t.Errorf("B not based on new A tip after continue")
+	}
+	if err := gitx.Checkout(branchB); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(r.Dir, "file.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(got)) != "resolved" {
+		t.Fatalf("expected 'resolved' after continue, got %q", got)
 	}
 }
 
