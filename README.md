@@ -76,6 +76,25 @@ $ sb log
 
 Run `sb <cmd> --help` for details.
 
+Anything sb doesn't recognize is forwarded to `git` with the exit code
+preserved, so `sb status`, `sb push`, `sb rev-parse HEAD`, etc. Just Work
+without having to switch tools:
+
+```sh
+$ sb status
+On branch main
+nothing to commit, working tree clean
+$ sb rev-parse HEAD
+a7beebafa0ce5ac27b9f286fc4a5128bda4ebf21
+```
+
+Note the two names sb reuses from git with different meaning:
+
+- `sb log` renders the **stack tree**, not commit history. Use `git log`
+  (or `sb --help log`) if you want commits.
+- `sb checkout` with no args opens a picker over the current stack.
+  With a branch name, it behaves like `git checkout <branch>`.
+
 ## Configuration
 
 `~/.config/sb/config.toml`:
