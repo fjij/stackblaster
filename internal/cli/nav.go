@@ -9,6 +9,7 @@ import (
 	"github.com/fjij/stackblaster/internal/config"
 	"github.com/fjij/stackblaster/internal/gitx"
 	"github.com/fjij/stackblaster/internal/stack"
+	"github.com/fjij/stackblaster/internal/tui"
 )
 
 var upCmd = &cobra.Command{
@@ -71,13 +72,21 @@ func runUp(cmd *cobra.Command, args []string) error {
 	if !ok || len(node.Children) == 0 {
 		return errors.New("no branch above current in the stack")
 	}
-	if len(node.Children) > 1 {
-		return fmt.Errorf(
-			"branch %q has %d children — use `sb checkout` to pick one",
-			current, len(node.Children),
-		)
+	if len(node.Children) == 1 {
+		return gitx.Checkout(node.Children[0].Name)
 	}
-	return gitx.Checkout(node.Children[0].Name)
+	names := make([]string, len(node.Children))
+	for i, c := range node.Children {
+		names[i] = c.Name
+	}
+	choice, err := pickOrErr(names, fmt.Sprintf("Up from %s — pick a child", current), len(node.Children), current)
+	if err != nil {
+		return err
+	}
+	if choice == "" {
+		return nil // canceled
+	}
+	return gitx.Checkout(choice)
 }
 
 func runDown(cmd *cobra.Command, args []string) error {
@@ -104,20 +113,30 @@ func runTop(cmd *cobra.Command, args []string) error {
 	if !ok {
 		return fmt.Errorf("current branch %q not tracked", current)
 	}
+	// Walk up while the path is unambiguous.
 	for len(node.Children) == 1 {
 		node = node.Children[0]
 	}
-	if len(node.Children) > 1 {
-		return fmt.Errorf(
-			"branch %q has %d children — use `sb checkout` to pick one",
-			node.Name, len(node.Children),
-		)
+	if len(node.Children) == 0 {
+		if node.Name == current {
+			fmt.Println("✓ already at top")
+			return nil
+		}
+		return gitx.Checkout(node.Name)
 	}
-	if node.Name == current {
-		fmt.Println("✓ already at top")
+	// Fork — collect every leaf reachable from here and offer them as a picker.
+	leaves := collectLeaves(node)
+	if len(leaves) == 1 {
+		return gitx.Checkout(leaves[0])
+	}
+	choice, err := pickOrErr(leaves, fmt.Sprintf("Top from %s — pick a leaf", current), len(leaves), node.Name)
+	if err != nil {
+		return err
+	}
+	if choice == "" {
 		return nil
 	}
-	return gitx.Checkout(node.Name)
+	return gitx.Checkout(choice)
 }
 
 func runBottom(cmd *cobra.Command, args []string) error {
@@ -141,4 +160,41 @@ func runBottom(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	return gitx.Checkout(node.Name)
+}
+
+// pickOrErr shows a picker over `names`. Returns "" if the user canceled.
+// Returns a helpful error (mentioning `atBranch` and `count`) when stdin isn't
+// a TTY, so scripts don't hang waiting for input.
+func pickOrErr(names []string, title string, count int, atBranch string) (string, error) {
+	items := make([]tui.PickerItem, len(names))
+	for i, n := range names {
+		items[i] = tui.PickerItem{Name: n}
+	}
+	choice, err := tui.PickBranch(items, title)
+	if err == nil {
+		return choice, nil
+	}
+	if errors.Is(err, tui.ErrCanceled) {
+		return "", nil
+	}
+	if errors.Is(err, tui.ErrNotATTY) {
+		return "", fmt.Errorf(
+			"branch %q has %d children and this isn't a TTY — pick one with `sb checkout <branch>`",
+			atBranch, count,
+		)
+	}
+	return "", err
+}
+
+// collectLeaves returns the names of every leaf branch in the subtree rooted
+// at n. If n itself is a leaf, returns [n.Name].
+func collectLeaves(n *stack.Node) []string {
+	if len(n.Children) == 0 {
+		return []string{n.Name}
+	}
+	var out []string
+	for _, c := range n.Children {
+		out = append(out, collectLeaves(c)...)
+	}
+	return out
 }

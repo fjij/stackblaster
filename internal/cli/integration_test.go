@@ -313,6 +313,89 @@ func TestNav_UpDownTopBottom(t *testing.T) {
 	}
 }
 
+// buildFork sets up:
+//
+//	main → A → B
+//	         → C
+//
+// and leaves the caller checked out on A. Returns the names of A, B, C.
+func buildFork(t *testing.T, r *testutil.Repo) (a, b, c string) {
+	t.Helper()
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	a = mustCreate(t, "a")
+
+	r.WriteFile("b.txt", "b\n")
+	r.MustGit("add", "b.txt")
+	b = mustCreate(t, "b")
+
+	if err := gitx.Checkout(a); err != nil {
+		t.Fatal(err)
+	}
+	r.WriteFile("c.txt", "c\n")
+	r.MustGit("add", "c.txt")
+	c = mustCreate(t, "c")
+
+	if err := gitx.Checkout(a); err != nil {
+		t.Fatal(err)
+	}
+	return
+}
+
+func TestNav_UpForkErrorsInNonTTY(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+	_, _, _ = buildFork(t, r)
+
+	// Two children under A; go test runs without a TTY, so PickBranch
+	// returns ErrNotATTY and we surface a helpful error rather than hang.
+	resetFlags()
+	err := runUp(nil, nil)
+	if err == nil {
+		t.Fatal("expected error when up hits a fork without a TTY")
+	}
+	if !strings.Contains(err.Error(), "children") || !strings.Contains(err.Error(), "sb checkout") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNav_TopForkErrorsInNonTTY(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+	_, _, _ = buildFork(t, r)
+
+	// A has two leaves under it (B and C). Non-TTY, so top can't disambiguate.
+	resetFlags()
+	err := runTop(nil, nil)
+	if err == nil {
+		t.Fatal("expected error when top hits a fork without a TTY")
+	}
+	if !strings.Contains(err.Error(), "children") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCollectLeaves(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+	_, branchB, branchC := buildFork(t, r)
+
+	s, err := stack.Load("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A's leaves should be B and C (order-independent).
+	branchA, _ := gitx.CurrentBranch()
+	leaves := collectLeaves(s.All[branchA])
+	if len(leaves) != 2 {
+		t.Fatalf("expected 2 leaves, got %d: %v", len(leaves), leaves)
+	}
+	got := map[string]bool{leaves[0]: true, leaves[1]: true}
+	if !got[branchB] || !got[branchC] {
+		t.Fatalf("expected leaves %s and %s, got %v", branchB, branchC, leaves)
+	}
+}
+
 func TestModify_PersistsPlanOnConflict(t *testing.T) {
 	r := testutil.NewRepo(t)
 	silenceStdout(t)
