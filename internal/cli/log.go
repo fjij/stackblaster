@@ -10,31 +10,38 @@ import (
 	"github.com/fjij/stackblaster/internal/config"
 	"github.com/fjij/stackblaster/internal/gitx"
 	"github.com/fjij/stackblaster/internal/stack"
+	"github.com/fjij/stackblaster/internal/tui"
 )
 
 var logAll bool
 
 var logCmd = &cobra.Command{
 	Use:   "log",
-	Short: "Print the stack tree (current stack by default)",
-	RunE:  runLog,
+	Short: "Print the full stack tree",
+	Long: `Renders every tracked branch as a tree rooted at trunk. The current
+branch is highlighted regardless of where you are — including trunk itself.
+
+When a branch has multiple children, the child containing the current branch
+stays on the main axis; siblings are shown as indented sub-tracks that
+rejoin at a ├──┘ marker.
+
+Pass --all to also list untracked and orphaned branches (branches whose
+sbParent isn't set, or whose parent has been deleted) below the tree.`,
+	RunE: runLog,
 }
 
 func init() {
-	logCmd.Flags().BoolVar(&logAll, "all", false, "show every tracked branch, not just the current stack")
+	logCmd.Flags().BoolVar(&logAll, "all", false, "also list untracked and orphaned branches")
 	rootCmd.AddCommand(logCmd)
 }
 
 var (
-	trunkStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	branchStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
-	currentStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
-	hintStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Italic(true)
+	trunkStyle   = lipgloss.NewStyle().Foreground(tui.Trunk)
+	branchStyle  = lipgloss.NewStyle().Foreground(tui.Branch)
+	currentStyle = lipgloss.NewStyle().Foreground(tui.Accent).Bold(true)
+	hintStyle    = lipgloss.NewStyle().Foreground(tui.Muted).Italic(true)
+	structStyle  = lipgloss.NewStyle().Foreground(tui.Muted)
 )
-
-func connector() string {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("│")
-}
 
 func runLog(cmd *cobra.Command, args []string) error {
 	if err := gitx.Preflight(); err != nil {
@@ -55,8 +62,9 @@ func runLog(cmd *cobra.Command, args []string) error {
 	current, _ := gitx.CurrentBranch()
 
 	var b strings.Builder
+	renderSubtree(&b, st.Trunk, "", true, current)
+
 	if logAll {
-		renderTree(&b, st.Trunk, current)
 		if len(st.Untracked) > 0 {
 			fmt.Fprintln(&b)
 			fmt.Fprintln(&b, hintStyle.Render("untracked branches (no sbParent set):"))
@@ -71,84 +79,87 @@ func runLog(cmd *cobra.Command, args []string) error {
 				fmt.Fprintf(&b, "  %s → %s\n", n.Name, n.Parent)
 			}
 		}
-	} else {
-		renderCurrent(&b, st, current, cfg.Trunk)
 	}
 	fmt.Print(b.String())
 	return nil
 }
 
-// renderCurrent walks from `current` up to trunk via sbParent links and prints
-// each branch, current at top, trunk at bottom.
-func renderCurrent(b *strings.Builder, s *stack.Stack, current, trunk string) {
-	if current == "" {
-		fmt.Fprintln(b, hintStyle.Render("detached HEAD — no stack context"))
-		return
+// renderSubtree post-order-renders the subtree rooted at n, prepending
+// `indent` to every line. When a node has multiple children, the child
+// containing `current` (or the first alphabetically as a fallback) becomes
+// the "primary" and stays on the current column; other children get indented
+// by an extra "│  " level and rejoin via a `├──┘` marker back to this column.
+func renderSubtree(b *strings.Builder, n *stack.Node, indent string, isRoot bool, current string) {
+	switch len(n.Children) {
+	case 0:
+		// leaf — no descendants to render.
+	case 1:
+		renderSubtree(b, n.Children[0], indent, false, current)
+		fmt.Fprintln(b, indent+conn())
+	default:
+		primary, others := splitPrimary(n.Children, current)
+		renderSubtree(b, primary, indent, false, current)
+		fmt.Fprintln(b, indent+conn())
+
+		subIndent := indent + structStyle.Render("│  ")
+		for _, c := range others {
+			renderSubtree(b, c, subIndent, false, current)
+			fmt.Fprintln(b, subIndent+conn())
+		}
+		fmt.Fprintln(b, indent+structStyle.Render("├──┘"))
 	}
-	chain := []string{}
-	seen := map[string]bool{}
-	name := current
-	for name != "" && !seen[name] {
-		seen[name] = true
-		chain = append(chain, name)
-		if name == trunk {
-			break
-		}
-		node, ok := s.All[name]
-		if !ok || node.Parent == "" {
-			break
-		}
-		name = node.Parent
-	}
-	for i, n := range chain {
-		last := i == len(chain)-1
-		if n == trunk {
-			fmt.Fprintf(b, "◇ %s\n", trunkStyle.Render(n))
-			continue
-		}
-		marker := "●"
-		style := branchStyle
-		suffix := ""
-		if n == current {
-			marker = "◉"
-			style = currentStyle
-			suffix = "  " + hintStyle.Render("(current)")
-		}
-		fmt.Fprintf(b, "%s %s%s\n", marker, style.Render(n), suffix)
-		if !last {
-			fmt.Fprintln(b, connector())
-		}
-	}
-	if len(chain) > 0 && chain[len(chain)-1] != trunk {
-		fmt.Fprintln(b, hintStyle.Render("  (not tracked to trunk — try `sb track --parent "+trunk+"`)"))
-	}
+
+	// The node itself.
+	fmt.Fprintln(b, indent+branchLine(n, current, isRoot))
 }
 
-// renderTree walks the full tree for --all view. Post-order: children first,
-// then the node, so a linear stack reads leaf-at-top / trunk-at-bottom.
-func renderTree(b *strings.Builder, n *stack.Node, current string) {
-	renderNode(b, n, current, true)
-}
-
-func renderNode(b *strings.Builder, n *stack.Node, current string, isRoot bool) {
-	for i, c := range n.Children {
-		renderNode(b, c, current, false)
-		if i < len(n.Children)-1 {
-			fmt.Fprintln(b, hintStyle.Render("┊  (sibling)"))
+// splitPrimary picks the child that leads to `current` as the primary (kept
+// on the current axis). If no child contains `current`, the first child
+// (alphabetical, already sorted by stack.Load) is used. Returns (primary,
+// others).
+func splitPrimary(children []*stack.Node, current string) (*stack.Node, []*stack.Node) {
+	primaryIdx := 0
+	for i, c := range children {
+		if containsBranch(c, current) {
+			primaryIdx = i
+			break
 		}
 	}
-	if len(n.Children) > 0 {
-		fmt.Fprintln(b, connector())
+	primary := children[primaryIdx]
+	others := make([]*stack.Node, 0, len(children)-1)
+	for i, c := range children {
+		if i != primaryIdx {
+			others = append(others, c)
+		}
 	}
+	return primary, others
+}
+
+func containsBranch(n *stack.Node, name string) bool {
+	if n.Name == name {
+		return true
+	}
+	for _, c := range n.Children {
+		if containsBranch(c, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func conn() string {
+	return structStyle.Render("│")
+}
+
+func branchLine(n *stack.Node, current string, isRoot bool) string {
 	if isRoot {
-		fmt.Fprintf(b, "◇ %s\n", trunkStyle.Render(n.Name))
-		return
+		if n.Name == current {
+			return "◇ " + currentStyle.Render(n.Name) + "  " + hintStyle.Render("(current)")
+		}
+		return "◇ " + trunkStyle.Render(n.Name)
 	}
-	marker := "●"
-	style := branchStyle
 	if n.Name == current {
-		fmt.Fprintf(b, "◉ %s  %s\n", currentStyle.Render(n.Name), hintStyle.Render("(current)"))
-		return
+		return "◉ " + currentStyle.Render(n.Name) + "  " + hintStyle.Render("(current)")
 	}
-	fmt.Fprintf(b, "%s %s\n", marker, style.Render(n.Name))
+	return "● " + branchStyle.Render(n.Name)
 }

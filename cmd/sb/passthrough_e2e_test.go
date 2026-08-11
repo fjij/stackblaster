@@ -106,7 +106,8 @@ func TestPassthrough_KnownCommandStillCobra(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sb log --help: %v", err)
 	}
-	if !strings.Contains(string(out), "stack tree") {
-		t.Fatalf("expected sb log help (containing 'stack tree'), got:\n%s", out)
+	// sbParent is a git config key sb invents — git log would never mention it.
+	if !strings.Contains(string(out), "sbParent") {
+		t.Fatalf("expected sb log help (containing 'sbParent'), got:\n%s", out)
 	}
 }

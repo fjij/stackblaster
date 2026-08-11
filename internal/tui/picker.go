@@ -63,10 +63,10 @@ type pickerModel struct {
 }
 
 var (
-	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
+	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(Accent)
 	itemStyle     = lipgloss.NewStyle().PaddingLeft(2)
-	selectedStyle = lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color("212")).Bold(true)
-	hintStyleTUI  = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Italic(true)
+	selectedStyle = lipgloss.NewStyle().PaddingLeft(2).Foreground(Accent).Bold(true)
+	hintStyleTUI  = lipgloss.NewStyle().Foreground(Muted).Italic(true)
 )
 
 func (m pickerModel) Init() tea.Cmd { return nil }
