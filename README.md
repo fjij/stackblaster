@@ -20,7 +20,7 @@ I liked `gt`'s ergonomics — `create`, `modify`, `submit`, `sync` — but didn'
 ## 🥞 Opinions
 
 - **One commit per branch, by default.** `sb modify` amends and force-pushes with lease. The model doesn't _require_ one commit per branch — you can opt out — but the defaults assume it.
-- **Auto-named branches.** `sb create -m "fix ingest retry"` gives you `wharris/2026-08-10-fix-ingest-retry`. Prefix and date format are configurable.
+- **Auto-named branches.** `sb create -m "fix ingest retry"` gives you `fjij/2026-08-10-fix-ingest-retry`. Prefix and date format are configurable.
 - **Drafts by default.** `sb submit` opens PRs as drafts unless `--ready`.
 - **Trunk is sacred.** `sb` never commits to `main`; it always makes a branch.
 
@@ -41,26 +41,26 @@ Requires:
 
 ```sh
 $ sb create -m "add retry to ingest"
-✓ Created wharris/2026-08-10-add-retry-to-ingest (off main)
+✓ Created fjij/2026-08-10-add-retry-to-ingest (off main)
 ✓ Committed 3 files
 
 $ vim ingest.go
 $ git add -p
 
 $ sb modify
-✓ Amended commit on wharris/2026-08-10-add-retry-to-ingest
+✓ Amended commit on fjij/2026-08-10-add-retry-to-ingest
 
 $ sb create -m "cover retry with a test"
-✓ Created wharris/2026-08-10-cover-retry-with-a-test (off wharris/2026-08-10-add-retry-to-ingest)
+✓ Created fjij/2026-08-10-cover-retry-with-a-test (off fjij/2026-08-10-add-retry-to-ingest)
 
 $ sb submit
-✓ wharris/2026-08-10-add-retry-to-ingest    → PR #4213 (draft)
-✓ wharris/2026-08-10-cover-retry-with-a-test → PR #4214 (draft), stacked on #4213
+✓ fjij/2026-08-10-add-retry-to-ingest    → PR #4213 (draft)
+✓ fjij/2026-08-10-cover-retry-with-a-test → PR #4214 (draft), stacked on #4213
 
 $ sb log
-◉ wharris/2026-08-10-cover-retry-with-a-test   (current)
+◉ fjij/2026-08-10-cover-retry-with-a-test   (current)
 │
-● wharris/2026-08-10-add-retry-to-ingest
+● fjij/2026-08-10-add-retry-to-ingest
 │
 ◇ main
 ```
@@ -116,7 +116,7 @@ a default. Example global config:
 
 ```toml
 # ~/.config/sb/config.toml
-branch_prefix = "wharris"
+branch_prefix = "fjij"
 ```
 
 Example per-repo override (say the repo's trunk is `master`):

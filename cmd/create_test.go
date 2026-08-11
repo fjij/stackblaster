@@ -10,9 +10,9 @@ func TestBranchName(t *testing.T) {
 		msg        string
 		wantSuffix string // full name has a runtime-derived date; assert the suffix
 	}{
-		{"basic", "wharris", "2006-01-02", "add retry", "-add-retry"},
-		{"punct is collapsed", "wharris", "2006-01-02", "fix: cache!", "-fix-cache"},
-		{"long slug truncated", "wharris", "2006-01-02", "one two three four five six seven eight nine ten eleven", ""},
+		{"basic", "fjij", "2006-01-02", "add retry", "-add-retry"},
+		{"punct is collapsed", "fjij", "2006-01-02", "fix: cache!", "-fix-cache"},
+		{"long slug truncated", "fjij", "2006-01-02", "one two three four five six seven eight nine ten eleven", ""},
 		{"no prefix", "", "2006-01-02", "hello", ""},
 	}
 	for _, tc := range cases {
