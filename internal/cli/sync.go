@@ -17,12 +17,23 @@ var syncNoPrune bool
 
 var syncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Fetch trunk, rebase the stack onto it, prune merged branches",
-	RunE:  runSync,
+	Short: "Fetch trunk, rebase the stack onto it, prune stale local branches",
+	Long: `sb sync does three things:
+
+  1. Fetch origin with --prune, so remote-tracking refs for branches that
+     have been deleted upstream get cleaned up.
+  2. Fast-forward trunk to origin/trunk, then restack every descendant.
+  3. Delete local branches whose remote counterpart is gone (PR closed
+     with branch deletion, PR merged with auto-delete, etc.) OR whose PR
+     is currently in MERGED state on GitHub. Only sb-tracked branches
+     (those with sbParent set) are eligible for pruning.
+
+Pass --no-prune to skip step 3.`,
+	RunE: runSync,
 }
 
 func init() {
-	syncCmd.Flags().BoolVar(&syncNoPrune, "no-prune", false, "skip deleting local branches whose PRs have been merged")
+	syncCmd.Flags().BoolVar(&syncNoPrune, "no-prune", false, "skip deleting local branches that are gone from origin or merged")
 	rootCmd.AddCommand(syncCmd)
 }
 
@@ -45,8 +56,8 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if hasOrigin {
-		fmt.Println("↓ fetching origin…")
-		if err := gitx.Fetch("origin"); err != nil {
+		fmt.Println("↓ fetching origin (with --prune)…")
+		if err := gitx.FetchPrune("origin"); err != nil {
 			return err
 		}
 	} else {
@@ -114,41 +125,69 @@ func runSync(cmd *cobra.Command, args []string) error {
 	}
 
 	if !syncNoPrune && hasOrigin {
-		return pruneMerged(s, cfg.Trunk, current)
+		return pruneStale(s, cfg.Trunk, current)
 	}
 	return nil
 }
 
-// pruneMerged deletes local branches whose PRs have been merged on GitHub.
-// Requires gh; skipped with a note if gh isn't installed or authenticated.
-func pruneMerged(s *stack.Stack, trunk, current string) error {
-	if _, err := exec.LookPath("gh"); err != nil {
-		fmt.Println("(gh not installed — skipping merged-branch prune)")
-		return nil
-	}
-	if err := exec.Command("gh", "auth", "status").Run(); err != nil {
-		fmt.Println("(gh not authenticated — skipping merged-branch prune)")
-		return nil
-	}
+// pruneStale deletes sb-tracked branches whose remote is gone or whose PR
+// has been merged. "Gone from origin" is detected via git's upstream-track
+// info (populated by the earlier fetch --prune) and doesn't require gh.
+// The merged-PR check requires gh; if gh is missing or unauthed, only the
+// gone-upstream half runs.
+func pruneStale(s *stack.Stack, trunk, current string) error {
+	// Tracked candidates only — never delete branches sb doesn't manage.
+	tracked := make(map[string]bool, len(s.All))
 	var candidates []string
 	for name := range s.All {
 		if name == trunk {
 			continue
 		}
-		candidates = append(candidates, name)
+		if _, err := gitx.GetConfig("branch." + name + ".sbParent"); err == nil {
+			tracked[name] = true
+			candidates = append(candidates, name)
+		}
 	}
 	if len(candidates) == 0 {
 		return nil
 	}
-	merged, err := mergedBranches(candidates)
+
+	toDelete := map[string]string{} // branch → reason
+
+	// Gone-upstream: remote branch was deleted (PR closed w/ delete, merge
+	// w/ auto-delete, or a manual delete on origin).
+	gone, err := gitx.BranchesWithGoneUpstream()
 	if err != nil {
-		fmt.Printf("(prune check failed: %v)\n", err)
+		fmt.Printf("(couldn't list gone-upstream branches: %v)\n", err)
+	}
+	for _, b := range gone {
+		if tracked[b] {
+			toDelete[b] = "gone from origin"
+		}
+	}
+
+	// Merged-PR: gh reports the branch as having a MERGED PR (branch might
+	// still exist on origin if auto-delete is off).
+	if _, err := exec.LookPath("gh"); err != nil {
+		fmt.Println("(gh not installed — skipping merged-PR check)")
+	} else if err := exec.Command("gh", "auth", "status").Run(); err != nil {
+		fmt.Println("(gh not authenticated — skipping merged-PR check)")
+	} else {
+		merged, err := mergedBranches(candidates)
+		if err != nil {
+			fmt.Printf("(merged-PR check failed: %v)\n", err)
+		}
+		for _, b := range merged {
+			if _, already := toDelete[b]; !already {
+				toDelete[b] = "PR merged"
+			}
+		}
+	}
+
+	if len(toDelete) == 0 {
 		return nil
 	}
-	if len(merged) == 0 {
-		return nil
-	}
-	for _, b := range merged {
+	for b, reason := range toDelete {
 		if b == current {
 			fmt.Printf("(skipping delete of %s — it's checked out)\n", b)
 			continue
@@ -158,7 +197,8 @@ func pruneMerged(s *stack.Stack, trunk, current string) error {
 			continue
 		}
 		_ = gitx.UnsetConfig("branch." + b + ".sbParent")
-		fmt.Printf("✂  pruned %s (PR merged)\n", b)
+		_ = gitx.UnsetConfig("branch." + b + ".sbCreateMessage")
+		fmt.Printf("✂  pruned %s (%s)\n", b, reason)
 	}
 	return nil
 }

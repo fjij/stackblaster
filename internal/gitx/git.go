@@ -272,6 +272,44 @@ func Fetch(remote string) error {
 	return runInteractive("fetch", remote)
 }
 
+// FetchPrune runs `git fetch --prune [remote]` so stale remote-tracking refs
+// (branches deleted upstream) are cleaned up as part of the fetch.
+func FetchPrune(remote string) error {
+	if remote == "" {
+		remote = "origin"
+	}
+	return runInteractive("fetch", "--prune", remote)
+}
+
+// BranchesWithGoneUpstream returns local branches whose configured upstream
+// ref no longer exists on the remote. Requires a prior `git fetch --prune`.
+//
+// Uses `git for-each-ref` with `%(upstream:track)`, which prints `[gone]`
+// when the tracked ref is missing.
+func BranchesWithGoneUpstream() ([]string, error) {
+	out, err := run("git", "for-each-ref",
+		"--format=%(refname:short)\t%(upstream:track)",
+		"refs/heads/",
+	)
+	if err != nil {
+		return nil, err
+	}
+	if out == "" {
+		return nil, nil
+	}
+	var gone []string
+	for _, line := range strings.Split(out, "\n") {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		if strings.Contains(parts[1], "gone") {
+			gone = append(gone, parts[0])
+		}
+	}
+	return gone, nil
+}
+
 // RemoteExists reports whether the given remote is configured.
 func RemoteExists(remote string) (bool, error) {
 	out, err := run("git", "remote")

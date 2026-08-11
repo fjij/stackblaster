@@ -148,6 +148,46 @@ func TestSubmit_TitleAndBodyFileOverrideCurrentBranchOnly(t *testing.T) {
 	}
 }
 
+// TestSync_PrunesBranchDeletedFromOrigin covers the "close PR + delete
+// branch" flow: the local branch should be pruned even though gh reports no
+// merged PRs (nothing was merged — the PR was closed).
+func TestSync_PrunesBranchDeletedFromOrigin(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+	testutil.SetupBareOrigin(t, r)
+	gh := testutil.SetupGhStub(t) // gh installed but reports no merged PRs
+	_ = gh
+
+	// Create and push branch A.
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	branchA := mustCreate(t, "a")
+	r.MustGit("push", "-q", "-u", "origin", branchA)
+
+	// Simulate "close PR + delete branch on origin" — just delete the
+	// remote branch. On the next fetch --prune, origin/A goes away and the
+	// local branch's upstream becomes [gone].
+	r.MustGit("push", "-q", "origin", "--delete", branchA)
+
+	// Return to main so A can be deleted.
+	if err := gitx.Checkout("main"); err != nil {
+		t.Fatal(err)
+	}
+
+	resetFlags()
+	if err := runSync(nil, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	exists, err := gitx.BranchExists(branchA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Fatalf("expected %s to be pruned; it still exists", branchA)
+	}
+}
+
 func TestSync_PrunesMergedBranches(t *testing.T) {
 	r := testutil.NewRepo(t)
 	silenceStdout(t)
