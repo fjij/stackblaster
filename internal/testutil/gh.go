@@ -16,6 +16,8 @@ type GhStub struct {
 	// PRsDir is where the stub reads/writes PR JSON fixtures. Tests can
 	// pre-populate <branch>.json here to simulate an existing PR.
 	PRsDir string
+	// StacksDir is where the stub persists Stacked-PR API state (state.json).
+	StacksDir string
 	// LogPath is the file the stub appends each invocation's argv to (tab-
 	// separated per line). Read via ReadLog / Calls.
 	LogPath string
@@ -44,14 +46,16 @@ func SetupGhStub(t *testing.T) *GhStub {
 	}
 
 	prsDir := t.TempDir()
+	stacksDir := t.TempDir()
 	logPath := filepath.Join(t.TempDir(), "gh.log")
 
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("GH_STUB_PRS_DIR", prsDir)
+	t.Setenv("GH_STUB_STACKS_DIR", stacksDir)
 	t.Setenv("GH_STUB_LOG", logPath)
 	t.Setenv("GH_STUB_UNAUTHED", "") // clear if a prior test set it
 
-	return &GhStub{PRsDir: prsDir, LogPath: logPath, t: t}
+	return &GhStub{PRsDir: prsDir, StacksDir: stacksDir, LogPath: logPath, t: t}
 }
 
 // SetMerged tells the stub which branch names should appear in the

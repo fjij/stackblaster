@@ -188,6 +188,72 @@ func TestSync_PrunesBranchDeletedFromOrigin(t *testing.T) {
 	}
 }
 
+// TestSubmit_LinksStackOnGitHub verifies that submit, after creating PRs for
+// a 2+ branch stack, calls the /stacks REST endpoint to register them as a
+// stack on GitHub.
+func TestSubmit_LinksStackOnGitHub(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+	testutil.SetupBareOrigin(t, r)
+	gh := testutil.SetupGhStub(t)
+
+	// main → A → B
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	_ = mustCreate(t, "a")
+	r.WriteFile("b.txt", "b\n")
+	r.MustGit("add", "b.txt")
+	_ = mustCreate(t, "b")
+
+	resetFlags()
+	if err := runSubmit(nil, nil); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	// Expect a POST to /stacks with both PRs.
+	found := false
+	for _, argv := range gh.Calls() {
+		if len(argv) < 2 || argv[0] != "api" {
+			continue
+		}
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "--method POST") && strings.Contains(joined, "repos/fake/fake/stacks") && !strings.Contains(joined, "?pull_request=") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a POST /repos/fake/fake/stacks call; got log:\n%s", gh.ReadLog())
+	}
+}
+
+// TestSubmit_NoStackFlagSkipsLinking verifies that --no-stack suppresses the
+// stack-linking API calls entirely.
+func TestSubmit_NoStackFlagSkipsLinking(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+	testutil.SetupBareOrigin(t, r)
+	gh := testutil.SetupGhStub(t)
+
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	_ = mustCreate(t, "a")
+	r.WriteFile("b.txt", "b\n")
+	r.MustGit("add", "b.txt")
+	_ = mustCreate(t, "b")
+
+	resetFlags()
+	submitNoStack = true
+	if err := runSubmit(nil, nil); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	for _, argv := range gh.Calls() {
+		if len(argv) >= 2 && argv[0] == "api" && strings.Contains(strings.Join(argv, " "), "/stacks") {
+			t.Fatalf("expected no /stacks calls under --no-stack, got: %v", argv)
+		}
+	}
+}
+
 // TestSync_PrunesCurrentBranchByHoppingToTrunk covers the case where the
 // branch we're actively on is the one that needs pruning. Sync should hop
 // to trunk first and then delete the branch, rather than skipping it.
@@ -220,6 +286,47 @@ func TestSync_PrunesCurrentBranchByHoppingToTrunk(t *testing.T) {
 	cur, _ := gitx.CurrentBranch()
 	if cur != "main" {
 		t.Fatalf("expected to land on main after pruning current branch, got %s", cur)
+	}
+}
+
+// TestSync_ReparentsChildrenWhenPruning covers a subtle case: sync prunes B,
+// which is the parent of C. C's sbParent should be rewritten to B's sbParent
+// (typically trunk) before B is deleted, or C ends up orphaned in `sb log`.
+func TestSync_ReparentsChildrenWhenPruning(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+	testutil.SetupBareOrigin(t, r)
+	gh := testutil.SetupGhStub(t)
+
+	// main → A → B (A gets merged; B should survive with sbParent = main)
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	branchA := mustCreate(t, "a")
+	r.WriteFile("b.txt", "b\n")
+	r.MustGit("add", "b.txt")
+	branchB := mustCreate(t, "b")
+
+	// Sync deletes A (merged). B is our current branch — it survives with
+	// its sbParent rewritten to main.
+	gh.SetMerged(branchA)
+
+	resetFlags()
+	if err := runSync(nil, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	if exists, _ := gitx.BranchExists(branchA); exists {
+		t.Fatalf("expected %s to be pruned", branchA)
+	}
+	if exists, _ := gitx.BranchExists(branchB); !exists {
+		t.Fatalf("expected %s to survive", branchB)
+	}
+	parent, err := gitx.GetConfig("branch." + branchB + ".sbParent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent != "main" {
+		t.Fatalf("expected %s.sbParent to be reparented to main, got %q", branchB, parent)
 	}
 }
 

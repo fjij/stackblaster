@@ -21,6 +21,7 @@ var (
 	submitDryRun   bool
 	submitTitle    string
 	submitBodyFile string
+	submitNoStack  bool
 )
 
 var submitCmd = &cobra.Command{
@@ -29,6 +30,12 @@ var submitCmd = &cobra.Command{
 	Long: `For each branch in the current stack (bottom to top, excluding trunk):
 push with --force-with-lease, then create a PR if none exists, otherwise
 update its base to match the branch's sbParent.
+
+If the stack has 2+ PRs, they're linked into a stack on GitHub via the
+Stacked Pull Requests REST API so GitHub's UI shows the "Stacked pull
+request" banner and stack navigation. Pass --no-stack to skip this step
+(useful if the repo doesn't have stacked PRs enabled, or you just don't
+want the linkage).
 
 Drafts by default. Use --ready to open non-draft PRs, or --draft to force
 draft even when config sets draft_by_default = false.
@@ -46,6 +53,7 @@ func init() {
 	submitCmd.Flags().BoolVar(&submitDryRun, "dry-run", false, "print what would happen without pushing or hitting GitHub")
 	submitCmd.Flags().StringVar(&submitTitle, "title", "", "PR title for the current branch (default: commit subject)")
 	submitCmd.Flags().StringVar(&submitBodyFile, "body-file", "", "read PR body for the current branch from this file (default: commit body)")
+	submitCmd.Flags().BoolVar(&submitNoStack, "no-stack", false, "don't link the PRs into a stack on GitHub after creating them")
 	rootCmd.AddCommand(submitCmd)
 }
 
@@ -101,16 +109,82 @@ func runSubmit(cmd *cobra.Command, args []string) error {
 
 	// Bottom-to-top so parents exist before children reference them.
 	draft := decideDraft(cfg, submitReady, submitDraft)
+	prNumbers := make([]int, 0, len(chain))
 	for _, br := range chain {
 		parent := s.All[br].Parent
 		var titleFor, bodyFor string
 		if br == current {
 			titleFor, bodyFor = titleOverride, bodyOverride
 		}
-		if err := submitBranch(br, parent, draft, titleFor, bodyFor); err != nil {
+		num, err := submitBranch(br, parent, draft, titleFor, bodyFor)
+		if err != nil {
 			return err
 		}
+		if num > 0 {
+			prNumbers = append(prNumbers, num)
+		}
 	}
+
+	// Link the PRs into a stack on GitHub. Best-effort: on any error we log
+	// and continue — a failed link isn't worth abandoning already-created
+	// PRs. Skip in dry-run and when --no-stack.
+	if !submitDryRun && !submitNoStack && len(prNumbers) >= 2 {
+		if err := linkStack(prNumbers); err != nil {
+			fmt.Printf("(couldn't link PRs into a stack on GitHub: %v)\n", err)
+		}
+	}
+	return nil
+}
+
+// linkStack registers the given PRs as a stack via the GitHub Stacked PRs REST
+// API. If a stack containing any of these PRs already exists, only the new
+// ones (in order) are appended.
+func linkStack(prNumbers []int) error {
+	owner, repo, err := ghx.RepoOwnerName()
+	if err != nil {
+		return err
+	}
+	// Look for an existing stack from the bottom PR upward, so we correctly
+	// handle "some already linked, some new" cases.
+	var existing *ghx.StackInfo
+	for _, n := range prNumbers {
+		s, err := ghx.StackForPR(owner, repo, n)
+		if err != nil {
+			return err
+		}
+		if s != nil {
+			existing = s
+			break
+		}
+	}
+	if existing == nil {
+		s, err := ghx.CreateStack(owner, repo, prNumbers)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("🔗 linked stack #%d (%d PRs) on GitHub\n", s.Number, len(prNumbers))
+		return nil
+	}
+	// Some PRs already in a stack — append the new ones.
+	inStack := map[int]bool{}
+	for _, n := range existing.PullRequests {
+		inStack[n] = true
+	}
+	var missing []int
+	for _, n := range prNumbers {
+		if !inStack[n] {
+			missing = append(missing, n)
+		}
+	}
+	if len(missing) == 0 {
+		fmt.Printf("= stack #%d already contains these %d PRs\n", existing.Number, len(prNumbers))
+		return nil
+	}
+	s, err := ghx.AddToStack(owner, repo, existing.Number, missing)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("🔗 added %d PR(s) to stack #%d on GitHub\n", len(missing), s.Number)
 	return nil
 }
 
@@ -150,22 +224,24 @@ func chainToTrunk(s *stack.Stack, current, trunk string) ([]string, error) {
 	return nil, nil
 }
 
-func submitBranch(branch, parent string, draft bool, titleOverride, bodyOverride string) error {
+// submitBranch pushes the branch, then creates or retargets its PR.
+// Returns the PR's number (or 0 in dry-run) so the caller can link the stack.
+func submitBranch(branch, parent string, draft bool, titleOverride, bodyOverride string) (int, error) {
 	if submitDryRun {
 		fmt.Printf("• %s → PR base=%s draft=%v (dry-run)\n", branch, parent, draft)
-		return nil
+		return 0, nil
 	}
 
 	// Push with force-with-lease. If the branch has no upstream, this also
 	// sets it.
 	fmt.Printf("↑ pushing %s\n", branch)
 	if err := gitx.PushForceWithLease("origin", branch); err != nil {
-		return err
+		return 0, err
 	}
 
 	pr, err := ghx.PRForBranch(branch)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if pr == nil {
 		title := titleOverride
@@ -184,21 +260,25 @@ func submitBranch(branch, parent string, draft bool, titleOverride, bodyOverride
 			Draft: draft,
 		})
 		if err != nil {
-			return err
+			return 0, err
 		}
 		fmt.Printf("✓ opened %s (base %s) — %s\n", branch, parent, url)
-		return nil
+		// gh pr create doesn't return a number directly; look it up.
+		if created, err := ghx.PRForBranch(branch); err == nil && created != nil {
+			return created.Number, nil
+		}
+		return 0, nil
 	}
 	// PR exists — retarget base if needed.
 	if pr.BaseRef != parent {
 		if err := ghx.SetPRBase(branch, parent); err != nil {
-			return err
+			return pr.Number, err
 		}
 		fmt.Printf("↻ retargeted #%d: base %s → %s\n", pr.Number, pr.BaseRef, parent)
 	} else {
 		fmt.Printf("= #%d up to date (base %s)\n", pr.Number, parent)
 	}
-	return nil
+	return pr.Number, nil
 }
 
 // prTitleFor derives a PR title from the branch's tip commit.
