@@ -188,6 +188,41 @@ func TestSync_PrunesBranchDeletedFromOrigin(t *testing.T) {
 	}
 }
 
+// TestSync_PrunesCurrentBranchByHoppingToTrunk covers the case where the
+// branch we're actively on is the one that needs pruning. Sync should hop
+// to trunk first and then delete the branch, rather than skipping it.
+func TestSync_PrunesCurrentBranchByHoppingToTrunk(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+	testutil.SetupBareOrigin(t, r)
+	testutil.SetupGhStub(t)
+
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	branchA := mustCreate(t, "a")
+	r.MustGit("push", "-q", "-u", "origin", branchA)
+	r.MustGit("push", "-q", "origin", "--delete", branchA)
+
+	// Deliberately do NOT hop back to main — we're on A when sync runs.
+
+	resetFlags()
+	if err := runSync(nil, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	exists, err := gitx.BranchExists(branchA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Fatalf("expected %s to be pruned; still exists", branchA)
+	}
+	cur, _ := gitx.CurrentBranch()
+	if cur != "main" {
+		t.Fatalf("expected to land on main after pruning current branch, got %s", cur)
+	}
+}
+
 func TestSync_PrunesMergedBranches(t *testing.T) {
 	r := testutil.NewRepo(t)
 	silenceStdout(t)

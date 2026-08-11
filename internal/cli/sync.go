@@ -187,11 +187,16 @@ func pruneStale(s *stack.Stack, trunk, current string) error {
 	if len(toDelete) == 0 {
 		return nil
 	}
-	for b, reason := range toDelete {
-		if b == current {
-			fmt.Printf("(skipping delete of %s — it's checked out)\n", b)
-			continue
+	// If we're about to prune the currently checked-out branch, hop to trunk
+	// first so the delete can proceed. Git won't let us delete the branch
+	// we're on.
+	if _, hitCurrent := toDelete[current]; hitCurrent {
+		if err := gitx.Checkout(trunk); err != nil {
+			return fmt.Errorf("couldn't check out %s before pruning current branch: %w", trunk, err)
 		}
+		fmt.Printf("↩ switched to %s to prune %s\n", trunk, current)
+	}
+	for b, reason := range toDelete {
 		if err := gitx.DeleteBranch(b); err != nil {
 			fmt.Printf("(couldn't delete %s: %v)\n", b, err)
 			continue
