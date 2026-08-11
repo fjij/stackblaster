@@ -27,7 +27,7 @@ I liked `gt`'s ergonomics — `create`, `modify`, `submit`, `sync` — but didn'
 ## 🥞 Install
 
 ```sh
-go install github.com/fjij/stackblaster@latest
+go install github.com/fjij/stackblaster/cmd/sb@latest
 ```
 
 Requires:
@@ -164,7 +164,7 @@ and `delve`:
 
 ```sh
 nix develop
-$ go build -o sb .
+$ go build -o sb ./cmd/sb
 $ go test ./...
 ```
 
