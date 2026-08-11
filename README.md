@@ -72,14 +72,14 @@ $ sb log
 |---|---|
 | `sb create [-m MSG]`     | New branch stacked on current; commits staged changes as one commit. |
 | `sb modify [-m MSG]`     | Amend the current branch's tip and auto-restack descendants. Local-only. |
-| `sb move --onto TARGET`  | Change current branch's parent to TARGET, rebase, restack descendants. |
+| `sb move [--onto TARGET]` | Change current branch's parent, rebase, restack descendants. Omit `--onto` in a TTY for a picker. |
 | `sb submit [--ready]`    | Push the stack; open a PR for each branch or retarget its base. Drafts by default. |
 | `sb sync [--no-prune]`   | Fetch, fast-forward trunk, restack the tree, prune merged branches. |
 | `sb continue`            | Resume after resolving a rebase conflict. |
 | `sb log [--all]`         | Print the full stack tree (rooted at trunk). `--all` also lists untracked and orphaned branches. |
 | `sb checkout` / `sb co`  | Interactive branch picker (Bubble Tea). |
 | `sb up` · `sb down` · `sb top` · `sb bottom` | Navigate the stack. |
-| `sb track` · `sb untrack` | Adopt or drop existing branches. |
+| `sb track [--parent BRANCH]` · `sb untrack` | Adopt or drop existing branches. Omit `--parent` in a TTY for a picker. |
 | `sb restack`             | Rebase descendants of the current branch onto its tip. |
 
 Run `sb <cmd> --help` for details.

@@ -9,24 +9,26 @@ import (
 	"github.com/fjij/stackblaster/internal/config"
 	"github.com/fjij/stackblaster/internal/gitx"
 	"github.com/fjij/stackblaster/internal/stack"
+	"github.com/fjij/stackblaster/internal/tui"
 )
 
 var moveOnto string
 
 var moveCmd = &cobra.Command{
-	Use:   "move --onto TARGET",
+	Use:   "move [--onto TARGET]",
 	Short: "Move the current branch to a new parent (rebase + retrack)",
 	Long: `Change the current branch's parent to TARGET. Updates the sbParent
 tracking, rebases the branch's commits onto TARGET, and restacks any
 descendants.
 
-Refuses to move onto a descendant (that would create a cycle).`,
+Pass --onto to specify the target directly; omit it in a TTY to pick from
+a list of eligible branches (descendants of the current branch are
+filtered out, since moving onto one would create a cycle).`,
 	RunE: runMove,
 }
 
 func init() {
-	moveCmd.Flags().StringVar(&moveOnto, "onto", "", "new parent branch (required)")
-	_ = moveCmd.MarkFlagRequired("onto")
+	moveCmd.Flags().StringVar(&moveOnto, "onto", "", "new parent branch (opens a picker if omitted)")
 	rootCmd.AddCommand(moveCmd)
 }
 
@@ -49,24 +51,37 @@ func runMove(cmd *cobra.Command, args []string) error {
 	if current == cfg.Trunk {
 		return fmt.Errorf("refusing to move trunk (%s)", cfg.Trunk)
 	}
-	if current == moveOnto {
-		return errors.New("cannot move a branch onto itself")
-	}
-	exists, err := gitx.BranchExists(moveOnto)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("target branch %q does not exist", moveOnto)
-	}
 
 	s, err := stack.Load(cfg.Trunk)
 	if err != nil {
 		return err
 	}
+
+	target := moveOnto
+	if target == "" {
+		target, err = pickTargetForMove(s, current, cfg.Trunk)
+		if err != nil {
+			return err
+		}
+		if target == "" {
+			return nil // user canceled
+		}
+	}
+
+	if target == current {
+		return errors.New("cannot move a branch onto itself")
+	}
+	exists, err := gitx.BranchExists(target)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("target branch %q does not exist", target)
+	}
+	// Cycle check — enforced regardless of picker vs flag path.
 	for _, d := range stack.Descendants(s, current) {
-		if d == moveOnto {
-			return fmt.Errorf("cannot move %s onto its descendant %s (cycle)", current, moveOnto)
+		if d == target {
+			return fmt.Errorf("cannot move %s onto its descendant %s (cycle)", current, target)
 		}
 	}
 
@@ -75,10 +90,10 @@ func runMove(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if oldParent == "" {
-		return fmt.Errorf("branch %q is not tracked (no sbParent) — run `sb track --parent %s` first", current, moveOnto)
+		return fmt.Errorf("branch %q is not tracked (no sbParent) — run `sb track --parent %s` first", current, target)
 	}
-	if oldParent == moveOnto {
-		fmt.Printf("✓ %s already has parent %s — nothing to do\n", current, moveOnto)
+	if oldParent == target {
+		fmt.Printf("✓ %s already has parent %s — nothing to do\n", current, target)
 		return nil
 	}
 
@@ -91,17 +106,17 @@ func runMove(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	newParentSha, err := gitx.HeadSha(moveOnto)
+	newParentSha, err := gitx.HeadSha(target)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("↻ moving %s: parent %s → %s\n", current, oldParent, moveOnto)
+	fmt.Printf("↻ moving %s: parent %s → %s\n", current, oldParent, target)
 	if err := gitx.RebaseOnto(newParentSha, oldParentSha, current); err != nil {
 		return err
 	}
 
-	if err := gitx.SetConfig("branch."+current+".sbParent", moveOnto); err != nil {
+	if err := gitx.SetConfig("branch."+current+".sbParent", target); err != nil {
 		return err
 	}
 
@@ -137,4 +152,45 @@ func runMove(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("↻ restacking %d descendant(s)…\n", len(steps))
 	return plan.Execute()
+}
+
+// pickTargetForMove shows a picker over every branch except `current` and
+// its descendants (which would form a cycle). Highlights trunk and the
+// current parent. Returns "" (no error) if the user canceled.
+func pickTargetForMove(s *stack.Stack, current, trunk string) (string, error) {
+	branches, err := gitx.ListBranches()
+	if err != nil {
+		return "", err
+	}
+	// Build the descendant set for the cycle filter.
+	excluded := map[string]bool{current: true}
+	for _, d := range stack.Descendants(s, current) {
+		excluded[d] = true
+	}
+	currentParent, _ := gitx.GetConfig("branch." + current + ".sbParent")
+
+	names := make([]string, 0, len(branches))
+	items := make([]tui.PickerItem, 0, len(branches))
+	for _, b := range branches {
+		if excluded[b] {
+			continue
+		}
+		names = append(names, b)
+		item := tui.PickerItem{Name: b}
+		switch {
+		case b == currentParent:
+			item.Hint = "(current parent)"
+		case b == trunk:
+			item.Hint = "(trunk)"
+			item.Current = true // start the cursor on trunk
+		}
+		items = append(items, item)
+	}
+	if len(names) == 0 {
+		return "", errors.New("no eligible branches to move onto — every other branch is a descendant of this one")
+	}
+	notTTYErr := fmt.Errorf(
+		"no target given and this isn't a TTY — pass --onto BRANCH",
+	)
+	return pickFromBranches(names, items, "Move "+current+" — pick a new parent", notTTYErr)
 }

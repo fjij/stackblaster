@@ -9,7 +9,6 @@ import (
 	"github.com/fjij/stackblaster/internal/config"
 	"github.com/fjij/stackblaster/internal/gitx"
 	"github.com/fjij/stackblaster/internal/stack"
-	"github.com/fjij/stackblaster/internal/tui"
 )
 
 var upCmd = &cobra.Command{
@@ -162,28 +161,15 @@ func runBottom(cmd *cobra.Command, args []string) error {
 	return gitx.Checkout(node.Name)
 }
 
-// pickOrErr shows a picker over `names`. Returns "" if the user canceled.
-// Returns a helpful error (mentioning `atBranch` and `count`) when stdin isn't
-// a TTY, so scripts don't hang waiting for input.
+// pickOrErr shows a picker over `names` for nav commands. See pickFromBranches
+// for the general contract; this thin wrapper just supplies a nav-specific
+// non-TTY error message.
 func pickOrErr(names []string, title string, count int, atBranch string) (string, error) {
-	items := make([]tui.PickerItem, len(names))
-	for i, n := range names {
-		items[i] = tui.PickerItem{Name: n}
-	}
-	choice, err := tui.PickBranch(items, title)
-	if err == nil {
-		return choice, nil
-	}
-	if errors.Is(err, tui.ErrCanceled) {
-		return "", nil
-	}
-	if errors.Is(err, tui.ErrNotATTY) {
-		return "", fmt.Errorf(
-			"branch %q has %d children and this isn't a TTY — pick one with `sb checkout <branch>`",
-			atBranch, count,
-		)
-	}
-	return "", err
+	notTTYErr := fmt.Errorf(
+		"branch %q has %d children and this isn't a TTY — pick one with `sb checkout <branch>`",
+		atBranch, count,
+	)
+	return pickFromBranches(names, nil, title, notTTYErr)
 }
 
 // collectLeaves returns the names of every leaf branch in the subtree rooted

@@ -373,6 +373,50 @@ func TestNav_TopForkErrorsInNonTTY(t *testing.T) {
 	}
 }
 
+func TestTrack_NoParentErrorsInNonTTY(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+
+	r.MustGit("checkout", "-b", "manual-branch")
+	resetFlags() // trackParent = ""
+	err := runTrack(nil, nil)
+	if err == nil {
+		t.Fatal("expected error when track has no --parent and no TTY")
+	}
+	if !strings.Contains(err.Error(), "--parent") {
+		t.Fatalf("expected error to mention --parent, got: %v", err)
+	}
+}
+
+func TestMove_NoOntoErrorsInNonTTY(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+
+	// Create A off main so we have something to attempt a move on.
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	_ = mustCreate(t, "a")
+
+	// Also make B off main so there's an eligible target — the not-TTY
+	// error should fire before the "no eligible targets" check.
+	if err := gitx.Checkout("main"); err != nil {
+		t.Fatal(err)
+	}
+	r.WriteFile("b.txt", "b\n")
+	r.MustGit("add", "b.txt")
+	branchA := mustCreate(t, "b")
+	_ = branchA
+
+	resetFlags() // moveOnto = ""
+	err := runMove(nil, nil)
+	if err == nil {
+		t.Fatal("expected error when move has no --onto and no TTY")
+	}
+	if !strings.Contains(err.Error(), "--onto") {
+		t.Fatalf("expected error to mention --onto, got: %v", err)
+	}
+}
+
 func TestCollectLeaves(t *testing.T) {
 	r := testutil.NewRepo(t)
 	silenceStdout(t)
