@@ -97,17 +97,41 @@ Note the two names sb reuses from git with different meaning:
 
 ## Configuration
 
-`~/.config/sb/config.toml`:
+sb reads TOML from two files and merges them in this order (later wins):
+
+1. **Built-in defaults** (see table below).
+2. **Global**: `$XDG_CONFIG_HOME/sb/config.toml`, or `~/.config/sb/config.toml`
+   if `XDG_CONFIG_HOME` is unset.
+3. **Per-repo**: `.sb/config.toml` at the repo root.
+
+Neither file is created for you — drop one in when you want to override
+a default. Example global config:
 
 ```toml
-branch_prefix    = "wharris"
-date_format      = "2006-01-02"    # Go time format
-trunk            = "main"
-force_with_lease = true
-draft_by_default = true
+# ~/.config/sb/config.toml
+branch_prefix = "wharris"
 ```
 
-Per-repo overrides live in `.sb/config.toml`.
+Example per-repo override (say the repo's trunk is `master`):
+
+```toml
+# <repo>/.sb/config.toml
+trunk = "master"
+```
+
+### Keys
+
+| Key                | Type    | Default        | Purpose |
+|--------------------|---------|----------------|---------|
+| `branch_prefix`    | string  | `""` (none)    | Prepended to every auto-generated branch as `<prefix>/<date>-<slug>`. With no prefix set, branches are just `<date>-<slug>`. |
+| `date_format`      | string  | `"2006-01-02"` | Go time format string (see [pkg.go.dev/time](https://pkg.go.dev/time#pkg-constants)) used in auto-generated branch names. |
+| `trunk`            | string  | `"main"`       | The branch sb treats as sacred. Never committed to directly; `sb sync` fast-forwards it from `origin`. |
+| `force_with_lease` | bool    | `true`         | Whether `sb modify` / `sb submit` push with `--force-with-lease`. |
+| `draft_by_default` | bool    | `true`         | Whether `sb submit` opens PRs as drafts. `--ready` and `--draft` on `sb submit` override per-invocation. |
+
+There is intentionally no `sb config` sub-command — edit the file
+directly. The defaults are chosen so an empty config works; the one you
+almost certainly want to set is `branch_prefix`.
 
 ## How it works
 

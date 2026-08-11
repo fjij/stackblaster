@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"os/user"
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
@@ -18,14 +17,8 @@ type Config struct {
 }
 
 func Default() Config {
-	prefix := os.Getenv("USER")
-	if prefix == "" {
-		if u, err := user.Current(); err == nil {
-			prefix = u.Username
-		}
-	}
 	return Config{
-		BranchPrefix:   prefix,
+		BranchPrefix:   "",
 		DateFormat:     "2006-01-02",
 		Trunk:          "main",
 		ForceWithLease: true,
