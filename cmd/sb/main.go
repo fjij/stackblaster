@@ -3,12 +3,12 @@ package main
 import (
 	"os"
 
-	"github.com/fjij/stackblaster/cmd"
+	"github.com/fjij/stackblaster/internal/cli"
 )
 
 func main() {
-	if args, ok := cmd.ShouldPassthrough(os.Args); ok {
-		os.Exit(cmd.RunGit(args))
+	if args, ok := cli.ShouldPassthrough(os.Args); ok {
+		os.Exit(cli.RunGit(args))
 	}
-	cmd.Execute()
+	cli.Execute()
 }
