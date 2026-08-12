@@ -146,6 +146,44 @@ func SetConfig(key, value string) error {
 	return err
 }
 
+// GetConfigRegexp reads every git config entry whose key matches `pattern`
+// (git's own regex flavor). Returns a map[key]value (empty when nothing
+// matches).
+//
+// Git normalizes section and variable names to lowercase in the output;
+// subsection names (the middle "branch.<X>.foo" part) are preserved as
+// stored. So callers should key the map by the lowercase form of the
+// variable name.
+func GetConfigRegexp(pattern string) (map[string]string, error) {
+	var stdout, stderr bytes.Buffer
+	cmd := exec.Command("git", "config", "--get-regexp", pattern)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		// Exit code 1 means "no matches" — treat as empty.
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return map[string]string{}, nil
+		}
+		return nil, fmt.Errorf(
+			"git config --get-regexp %s: %s",
+			pattern, strings.TrimSpace(stderr.String()),
+		)
+	}
+	out := strings.TrimRight(stdout.String(), "\n")
+	if out == "" {
+		return map[string]string{}, nil
+	}
+	result := make(map[string]string)
+	for _, line := range strings.Split(out, "\n") {
+		idx := strings.IndexByte(line, ' ')
+		if idx < 0 {
+			continue
+		}
+		result[line[:idx]] = line[idx+1:]
+	}
+	return result, nil
+}
+
 // UnsetConfig removes a config key. It's not an error if the key was unset.
 func UnsetConfig(key string) error {
 	var stderr bytes.Buffer
@@ -331,6 +369,32 @@ func HasUpstream(branch string) (bool, error) {
 		return true, nil
 	}
 	return false, nil
+}
+
+// BranchUpstream returns the upstream ref (short form, e.g., "origin/foo")
+// and the tracking status (from git's `%(upstream:track)` — one of empty,
+// "[ahead N]", "[behind N]", "[ahead N, behind M]", or "[gone]") for a
+// single branch. Returns ("", "", nil) if the branch has no upstream.
+//
+// One subprocess call. Used by the `sb log` / nav status hints to avoid the
+// three-call `HasUpstream` + `HeadSha` + `RevParse(upstream)` dance.
+func BranchUpstream(branch string) (upstream, track string, err error) {
+	out, err := run(
+		"git", "for-each-ref",
+		"--format=%(upstream:short)|%(upstream:track)",
+		"refs/heads/"+branch,
+	)
+	if err != nil {
+		return "", "", err
+	}
+	if out == "" {
+		return "", "", nil
+	}
+	parts := strings.SplitN(out, "|", 2)
+	if len(parts) < 2 {
+		return parts[0], "", nil
+	}
+	return parts[0], parts[1], nil
 }
 
 // PushForceWithLease pushes the branch to remote, force-with-lease, setting
