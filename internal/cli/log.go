@@ -13,7 +13,10 @@ import (
 	"github.com/fjij/stackblaster/internal/tui"
 )
 
-var logAll bool
+var (
+	logAll      bool
+	logNoStatus bool
+)
 
 var logCmd = &cobra.Command{
 	Use:   "log",
@@ -25,13 +28,20 @@ When a branch has multiple children, the child containing the current branch
 stays on the main axis; siblings are shown as indented sub-tracks that
 rejoin at a ├──┘ marker.
 
-Pass --all to also list untracked and orphaned branches (branches whose
-sbParent isn't set, or whose parent has been deleted) below the tree.`,
+Each branch is annotated with its state:
+  (needs restack) — the branch's sbParent has moved ahead but this branch
+                    hasn't caught up. Run sb restack or sb sync.
+  (needs submit)  — the branch has commits not on origin, or no upstream
+                    yet. Run sb submit.
+
+Pass --all to also list untracked and orphaned branches. Pass --no-status
+to skip the state annotations (a bit faster on big trees).`,
 	RunE: runLog,
 }
 
 func init() {
 	logCmd.Flags().BoolVar(&logAll, "all", false, "also list untracked and orphaned branches")
+	logCmd.Flags().BoolVar(&logNoStatus, "no-status", false, "skip needs-restack / needs-submit annotations")
 	rootCmd.AddCommand(logCmd)
 }
 
@@ -40,8 +50,16 @@ var (
 	branchStyle  = lipgloss.NewStyle().Foreground(tui.Branch)
 	currentStyle = lipgloss.NewStyle().Foreground(tui.Accent).Bold(true)
 	hintStyle    = lipgloss.NewStyle().Foreground(tui.Muted).Italic(true)
+	warnStyle    = lipgloss.NewStyle().Foreground(tui.Accent).Italic(true)
 	structStyle  = lipgloss.NewStyle().Foreground(tui.Muted)
 )
+
+// branchStatus captures freshness signals for a single branch. Zero value
+// means "all good".
+type branchStatus struct {
+	needsRestack bool // sbParent has moved ahead but this branch hasn't caught up
+	needsSubmit  bool // local branch has commits not on origin (or no upstream)
+}
 
 func runLog(cmd *cobra.Command, args []string) error {
 	if err := gitx.Preflight(); err != nil {
@@ -61,8 +79,20 @@ func runLog(cmd *cobra.Command, args []string) error {
 	}
 	current, _ := gitx.CurrentBranch()
 
+	// Precompute status for every tracked branch (except trunk). Cheap: a
+	// couple git calls per branch, all local.
+	statuses := map[string]branchStatus{}
+	if !logNoStatus {
+		for name, node := range st.All {
+			if name == cfg.Trunk {
+				continue
+			}
+			statuses[name] = computeBranchStatus(name, node.Parent)
+		}
+	}
+
 	var b strings.Builder
-	renderSubtree(&b, st.Trunk, "", true, current)
+	renderSubtree(&b, st.Trunk, "", true, current, statuses)
 
 	if logAll {
 		if len(st.Untracked) > 0 {
@@ -84,21 +114,52 @@ func runLog(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// computeBranchStatus checks whether `branch` is behind its sbParent (needs
+// restack) and whether it has unsubmitted commits (needs submit). Any check
+// that errors is skipped silently — a missing hint is fine, a wrong hint is
+// worse.
+//
+// Two git subprocess calls total: one merge-base for restack, one
+// for-each-ref for upstream tracking info.
+func computeBranchStatus(branch, parent string) branchStatus {
+	var s branchStatus
+	if parent != "" {
+		// If parent's tip is NOT an ancestor of branch, parent has commits
+		// this branch doesn't include — restack needed.
+		if ok, err := gitx.IsAncestor(parent, branch); err == nil && !ok {
+			s.needsRestack = true
+		}
+	}
+	upstream, track, err := gitx.BranchUpstream(branch)
+	if err != nil {
+		return s
+	}
+	if upstream == "" {
+		s.needsSubmit = true // never pushed
+	} else if strings.Contains(track, "ahead") || strings.Contains(track, "gone") {
+		// [ahead N] → we have unpushed commits.
+		// [gone]    → remote branch was deleted; a push would recreate it.
+		// (Pure [behind N] means the remote is ahead of us; don't force submit.)
+		s.needsSubmit = true
+	}
+	return s
+}
+
 // renderSubtree post-order-renders the subtree rooted at n, prepending
 // `indent` to every line. When a node has multiple children, the child
 // containing `current` (or the first alphabetically as a fallback) becomes
 // the "primary" and stays on the current column; other children get indented
 // by an extra "│  " level and rejoin via a `├──┘` marker back to this column.
-func renderSubtree(b *strings.Builder, n *stack.Node, indent string, isRoot bool, current string) {
+func renderSubtree(b *strings.Builder, n *stack.Node, indent string, isRoot bool, current string, statuses map[string]branchStatus) {
 	switch len(n.Children) {
 	case 0:
 		// leaf — no descendants to render.
 	case 1:
-		renderSubtree(b, n.Children[0], indent, false, current)
+		renderSubtree(b, n.Children[0], indent, false, current, statuses)
 		fmt.Fprintln(b, indent+conn())
 	default:
 		primary, others := splitPrimary(n.Children, current)
-		renderSubtree(b, primary, indent, false, current)
+		renderSubtree(b, primary, indent, false, current, statuses)
 		fmt.Fprintln(b, indent+conn())
 
 		subIndent := indent + structStyle.Render("│  ")
@@ -108,7 +169,7 @@ func renderSubtree(b *strings.Builder, n *stack.Node, indent string, isRoot bool
 		// next sub-track opens. This keeps adjacent siblings visually
 		// distinct instead of stacking them like a linear chain.
 		for i, c := range others {
-			renderSubtree(b, c, subIndent, false, current)
+			renderSubtree(b, c, subIndent, false, current, statuses)
 			fmt.Fprintln(b, subIndent+conn())
 			fmt.Fprintln(b, indent+structStyle.Render("├──┘"))
 			if i < len(others)-1 {
@@ -118,7 +179,7 @@ func renderSubtree(b *strings.Builder, n *stack.Node, indent string, isRoot bool
 	}
 
 	// The node itself.
-	fmt.Fprintln(b, indent+branchLine(n, current, isRoot))
+	fmt.Fprintln(b, indent+branchLine(n, current, isRoot, statuses[n.Name]))
 }
 
 // splitPrimary picks the child that leads to `current` as the primary (kept
@@ -159,15 +220,32 @@ func conn() string {
 	return structStyle.Render("│")
 }
 
-func branchLine(n *stack.Node, current string, isRoot bool) string {
+func branchLine(n *stack.Node, current string, isRoot bool, status branchStatus) string {
+	marker := "●"
+	nameStyle := branchStyle
 	if isRoot {
-		if n.Name == current {
-			return "◇ " + currentStyle.Render(n.Name) + "  " + hintStyle.Render("(current)")
-		}
-		return "◇ " + trunkStyle.Render(n.Name)
+		marker = "◇"
+		nameStyle = trunkStyle
 	}
+	suffixes := []string{}
 	if n.Name == current {
-		return "◉ " + currentStyle.Render(n.Name) + "  " + hintStyle.Render("(current)")
+		marker = "◉"
+		if !isRoot {
+			nameStyle = currentStyle
+		} else {
+			nameStyle = currentStyle
+		}
+		suffixes = append(suffixes, hintStyle.Render("(current)"))
 	}
-	return "● " + branchStyle.Render(n.Name)
+	if status.needsRestack {
+		suffixes = append(suffixes, warnStyle.Render("(needs restack)"))
+	}
+	if status.needsSubmit && !isRoot {
+		suffixes = append(suffixes, warnStyle.Render("(needs submit)"))
+	}
+	line := marker + " " + nameStyle.Render(n.Name)
+	if len(suffixes) > 0 {
+		line += "  " + strings.Join(suffixes, " ")
+	}
+	return line
 }
