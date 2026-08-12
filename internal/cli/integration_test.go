@@ -815,6 +815,69 @@ func stripANSI(s string) string {
 	return ansiRe.ReplaceAllString(s, "")
 }
 
+// TestNav_UpAnnouncesLandingWithStatus verifies that after `sb up`, we
+// print a landing line for the branch we arrived on, with hints if the
+// branch needs restacking or submitting.
+func TestNav_UpAnnouncesLandingWithStatus(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdoutOnly := false // we WANT stdout here, don't silence
+	_ = silenceStdoutOnly
+
+	// main → A → B; nothing pushed.
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	branchA := mustCreate(t, "a")
+	r.WriteFile("b.txt", "b\n")
+	r.MustGit("add", "b.txt")
+	branchB := mustCreate(t, "b")
+
+	// Back to main, then `sb up 2` should land on B.
+	if err := gitx.Checkout("main"); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		resetFlags()
+		if err := runUp(nil, []string{"2"}); err != nil {
+			t.Fatalf("up 2: %v", err)
+		}
+	})
+	plain := stripANSI(out)
+
+	if !strings.Contains(plain, "◉ "+branchB) {
+		t.Errorf("expected landing line for %s; got:\n%s", branchB, plain)
+	}
+	if !strings.Contains(plain, "(needs submit)") {
+		t.Errorf("expected `(needs submit)` on landing line (no upstream); got:\n%s", plain)
+	}
+	_ = branchA
+}
+
+// TestNav_LandingSuppressedByNoStatus: --no-status on sb log also suppresses
+// the nav landing line's hints (the flag is shared).
+func TestNav_LandingSuppressedByNoStatus(t *testing.T) {
+	r := testutil.NewRepo(t)
+
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	_ = mustCreate(t, "a")
+	if err := gitx.Checkout("main"); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		resetFlags()
+		logNoStatus = true
+		if err := runUp(nil, nil); err != nil {
+			t.Fatalf("up: %v", err)
+		}
+	})
+	plain := stripANSI(out)
+	if strings.Contains(plain, "◉") || strings.Contains(plain, "needs") {
+		t.Errorf("expected no landing line under --no-status; got:\n%s", plain)
+	}
+}
+
 // TestLog_ShowsNeedsRestackAndNeedsSubmit verifies that sb log annotates
 // branches with (needs restack) when their sbParent has moved ahead, and
 // with (needs submit) when they haven't been pushed.
