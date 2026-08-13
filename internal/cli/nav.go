@@ -97,7 +97,7 @@ func runUp(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	s, current, _, err := loadStackAndCurrent()
+	s, current, cfg, err := loadStackAndCurrent()
 	if err != nil {
 		return err
 	}
@@ -122,7 +122,7 @@ func runUp(cmd *cobra.Command, args []string) error {
 		dest = choice
 	}
 
-	if err := gitx.Checkout(dest); err != nil {
+	if err := checkoutAndAnnounce(dest, cfg.Trunk); err != nil {
 		return err
 	}
 	if depth < n {
@@ -182,7 +182,7 @@ func runDown(cmd *cobra.Command, args []string) error {
 		}
 		return errors.New("current branch is not tracked (no parent to move down to)")
 	}
-	if err := gitx.Checkout(dest); err != nil {
+	if err := checkoutAndAnnounce(dest, cfg.Trunk); err != nil {
 		return err
 	}
 	if moved < n {
@@ -210,7 +210,7 @@ func planDown(s *stack.Stack, from string, n int, trunk string) (dest string, mo
 }
 
 func runTop(cmd *cobra.Command, args []string) error {
-	s, current, _, err := loadStackAndCurrent()
+	s, current, cfg, err := loadStackAndCurrent()
 	if err != nil {
 		return err
 	}
@@ -227,12 +227,12 @@ func runTop(cmd *cobra.Command, args []string) error {
 			fmt.Println("✓ already at top")
 			return nil
 		}
-		return gitx.Checkout(node.Name)
+		return checkoutAndAnnounce(node.Name, cfg.Trunk)
 	}
 	// Fork — collect every leaf reachable from here and offer them as a picker.
 	leaves := collectLeaves(node)
 	if len(leaves) == 1 {
-		return gitx.Checkout(leaves[0])
+		return checkoutAndAnnounce(leaves[0], cfg.Trunk)
 	}
 	choice, err := pickOrErr(leaves, fmt.Sprintf("Top from %s — pick a leaf", current), len(leaves), node.Name)
 	if err != nil {
@@ -241,7 +241,7 @@ func runTop(cmd *cobra.Command, args []string) error {
 	if choice == "" {
 		return nil
 	}
-	return gitx.Checkout(choice)
+	return checkoutAndAnnounce(choice, cfg.Trunk)
 }
 
 func runBottom(cmd *cobra.Command, args []string) error {
@@ -264,7 +264,7 @@ func runBottom(cmd *cobra.Command, args []string) error {
 		fmt.Println("✓ already at bottom")
 		return nil
 	}
-	return gitx.Checkout(node.Name)
+	return checkoutAndAnnounce(node.Name, cfg.Trunk)
 }
 
 // pickOrErr shows a picker over `names` for nav commands. See pickFromBranches
@@ -276,6 +276,38 @@ func pickOrErr(names []string, title string, count int, atBranch string) (string
 		atBranch, count,
 	)
 	return pickFromBranches(names, nil, title, notTTYErr)
+}
+
+// checkoutAndAnnounce runs `git checkout <branch>` and, on success, prints a
+// one-line landing indicator that includes the same (needs restack) /
+// (needs submit) hints that `sb log` uses. Suppressed under --no-status
+// (shared with `sb log`).
+func checkoutAndAnnounce(branch, trunk string) error {
+	if err := gitx.Checkout(branch); err != nil {
+		return err
+	}
+	printLanded(branch, trunk)
+	return nil
+}
+
+// printLanded prints "◉ <branch>" (in accent color) followed by any hints.
+// Silent under --no-status.
+func printLanded(branch, trunk string) {
+	if logNoStatus {
+		return
+	}
+	line := "◉ " + currentStyle.Render(branch)
+	if branch != trunk {
+		parent, _ := gitx.GetConfig("branch." + branch + ".sbParent")
+		status := computeBranchStatus(branch, parent)
+		if status.needsRestack {
+			line += "  " + warnStyle.Render("(needs restack)")
+		}
+		if status.needsSubmit {
+			line += "  " + warnStyle.Render("(needs submit)")
+		}
+	}
+	fmt.Println(line)
 }
 
 // collectLeaves returns the names of every leaf branch in the subtree rooted

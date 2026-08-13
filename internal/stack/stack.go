@@ -4,6 +4,7 @@ package stack
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/fjij/stackblaster/internal/gitx"
 )
@@ -22,6 +23,9 @@ type Stack struct {
 }
 
 // Load builds the tree by iterating local branches and reading their sbParent.
+// Uses one batched `git config --get-regexp` call for all sbParent entries
+// instead of one call per branch, which matters when a repo has many tracked
+// branches (nav commands felt sluggish before this).
 func Load(trunk string) (*Stack, error) {
 	branches, err := gitx.ListBranches()
 	if err != nil {
@@ -36,15 +40,27 @@ func Load(trunk string) (*Stack, error) {
 		all[trunk] = &Node{Name: trunk}
 	}
 
+	// One call for every branch's sbParent — git normalizes the variable
+	// name to lowercase, so the map keys look like "branch.<name>.sbparent".
+	sbparents, err := gitx.GetConfigRegexp(`^branch\..*\.sbparent$`)
+	if err != nil {
+		return nil, err
+	}
+	parentByBranch := make(map[string]string, len(sbparents))
+	for key, value := range sbparents {
+		if !strings.HasPrefix(key, "branch.") || !strings.HasSuffix(key, ".sbparent") {
+			continue
+		}
+		name := strings.TrimSuffix(strings.TrimPrefix(key, "branch."), ".sbparent")
+		parentByBranch[name] = value
+	}
+
 	var orphans, untracked []*Node
 	for _, b := range branches {
 		if b == trunk {
 			continue
 		}
-		parent, err := gitx.GetConfig("branch." + b + ".sbParent")
-		if err != nil {
-			return nil, err
-		}
+		parent := parentByBranch[b]
 		if parent == "" {
 			untracked = append(untracked, all[b])
 			continue

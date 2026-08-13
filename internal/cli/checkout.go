@@ -6,7 +6,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/fjij/stackblaster/internal/gitx"
 	"github.com/fjij/stackblaster/internal/stack"
 	"github.com/fjij/stackblaster/internal/tui"
 )
@@ -28,7 +27,11 @@ func init() {
 
 func runCheckout(cmd *cobra.Command, args []string) error {
 	if len(args) == 1 {
-		return gitx.Checkout(args[0])
+		_, _, cfg, err := loadStackAndCurrent()
+		if err != nil {
+			return err
+		}
+		return checkoutAndAnnounce(args[0], cfg.Trunk)
 	}
 	s, current, cfg, err := loadStackAndCurrent()
 	if err != nil {
@@ -74,7 +77,7 @@ func runCheckout(cmd *cobra.Command, args []string) error {
 		fmt.Printf("✓ already on %s\n", choice)
 		return nil
 	}
-	return gitx.Checkout(choice)
+	return checkoutAndAnnounce(choice, cfg.Trunk)
 }
 
 // collectCurrentStack returns branches from top of stack (containing current)

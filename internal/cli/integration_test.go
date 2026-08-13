@@ -22,6 +22,7 @@ func resetFlags() {
 	moveOnto = ""
 	trackParent = ""
 	logAll = false
+	logNoStatus = false
 	checkoutAll = false
 	syncNoPrune = false
 	submitReady = false
@@ -812,6 +813,132 @@ var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func stripANSI(s string) string {
 	return ansiRe.ReplaceAllString(s, "")
+}
+
+// TestNav_UpAnnouncesLandingWithStatus verifies that after `sb up`, we
+// print a landing line for the branch we arrived on, with hints if the
+// branch needs restacking or submitting.
+func TestNav_UpAnnouncesLandingWithStatus(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdoutOnly := false // we WANT stdout here, don't silence
+	_ = silenceStdoutOnly
+
+	// main → A → B; nothing pushed.
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	branchA := mustCreate(t, "a")
+	r.WriteFile("b.txt", "b\n")
+	r.MustGit("add", "b.txt")
+	branchB := mustCreate(t, "b")
+
+	// Back to main, then `sb up 2` should land on B.
+	if err := gitx.Checkout("main"); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		resetFlags()
+		if err := runUp(nil, []string{"2"}); err != nil {
+			t.Fatalf("up 2: %v", err)
+		}
+	})
+	plain := stripANSI(out)
+
+	if !strings.Contains(plain, "◉ "+branchB) {
+		t.Errorf("expected landing line for %s; got:\n%s", branchB, plain)
+	}
+	if !strings.Contains(plain, "(needs submit)") {
+		t.Errorf("expected `(needs submit)` on landing line (no upstream); got:\n%s", plain)
+	}
+	_ = branchA
+}
+
+// TestNav_LandingSuppressedByNoStatus: --no-status on sb log also suppresses
+// the nav landing line's hints (the flag is shared).
+func TestNav_LandingSuppressedByNoStatus(t *testing.T) {
+	r := testutil.NewRepo(t)
+
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	_ = mustCreate(t, "a")
+	if err := gitx.Checkout("main"); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		resetFlags()
+		logNoStatus = true
+		if err := runUp(nil, nil); err != nil {
+			t.Fatalf("up: %v", err)
+		}
+	})
+	plain := stripANSI(out)
+	if strings.Contains(plain, "◉") || strings.Contains(plain, "needs") {
+		t.Errorf("expected no landing line under --no-status; got:\n%s", plain)
+	}
+}
+
+// TestLog_ShowsNeedsRestackAndNeedsSubmit verifies that sb log annotates
+// branches with (needs restack) when their sbParent has moved ahead, and
+// with (needs submit) when they haven't been pushed.
+func TestLog_ShowsNeedsRestackAndNeedsSubmit(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+
+	// main → A → B, no origin (so everything is "needs submit").
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	branchA := mustCreate(t, "a")
+	r.WriteFile("b.txt", "b\n")
+	r.MustGit("add", "b.txt")
+	branchB := mustCreate(t, "b")
+
+	// Amend A so B falls behind.
+	if err := gitx.Checkout(branchA); err != nil {
+		t.Fatal(err)
+	}
+	r.WriteFile("a.txt", "a modified\n")
+	r.MustGit("add", "a.txt")
+	// Use `git commit --amend --no-edit` directly so we can leave B untouched
+	// (sb modify would auto-restack).
+	r.MustGit("commit", "--amend", "--no-edit")
+
+	// Render log from main.
+	if err := gitx.Checkout("main"); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		resetFlags()
+		if err := runLog(nil, nil); err != nil {
+			t.Fatalf("log: %v", err)
+		}
+	})
+	plain := stripANSI(out)
+
+	// B should say "needs restack" (A's tip is no longer an ancestor of B).
+	if !strings.Contains(plain, branchB) || !strings.Contains(strings.Split(plain, branchB)[1], "needs restack") {
+		t.Errorf("expected `needs restack` next to %s; got:\n%s", branchB, plain)
+	}
+	// Both A and B have no upstream, so both should say "needs submit".
+	for _, name := range []string{branchA, branchB} {
+		afterName := strings.Split(plain, name)
+		if len(afterName) < 2 || !strings.Contains(afterName[1], "needs submit") {
+			t.Errorf("expected `needs submit` next to %s; got:\n%s", name, plain)
+		}
+	}
+
+	// With --no-status, the annotations should NOT appear.
+	out2 := captureStdout(t, func() {
+		resetFlags()
+		logNoStatus = true
+		if err := runLog(nil, nil); err != nil {
+			t.Fatalf("log --no-status: %v", err)
+		}
+	})
+	plain2 := stripANSI(out2)
+	if strings.Contains(plain2, "needs restack") || strings.Contains(plain2, "needs submit") {
+		t.Errorf("expected no status hints under --no-status; got:\n%s", plain2)
+	}
 }
 
 func TestContinue_ResolvesConflictAndFinishesPlan(t *testing.T) {
