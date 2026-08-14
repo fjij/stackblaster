@@ -37,7 +37,12 @@ type Plan struct {
 // oldBaseFor tells the planner where the branch used to be based, which is the
 // old SHA of its parent branch at the time we started (i.e., before the
 // user's amend or before sync fast-forwarded trunk).
-func BuildPlanForChildren(s *Stack, root string, oldBaseFor func(branch string) string) ([]Step, error) {
+//
+// Branches in `exclude` (and their whole subtrees) are skipped entirely. Used
+// by sb sync to avoid rebasing branches whose PR has been merged: rebasing
+// them onto the new trunk replays their now-squashed commits and conflicts.
+// Pass nil to plan every descendant.
+func BuildPlanForChildren(s *Stack, root string, oldBaseFor func(branch string) string, exclude map[string]bool) ([]Step, error) {
 	rootNode, ok := s.All[root]
 	if !ok {
 		return nil, fmt.Errorf("branch %q not tracked", root)
@@ -49,6 +54,9 @@ func BuildPlanForChildren(s *Stack, root string, oldBaseFor func(branch string) 
 		n := queue[0]
 		queue = queue[1:]
 		for _, c := range n.Children {
+			if exclude[c.Name] {
+				continue // skip both the rebase and the whole subtree
+			}
 			old := oldBaseFor(c.Name)
 			steps = append(steps, Step{
 				Branch:  c.Name,
