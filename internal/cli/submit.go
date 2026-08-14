@@ -61,9 +61,16 @@ func runSubmit(cmd *cobra.Command, args []string) error {
 	if err := gitx.Preflight(); err != nil {
 		return err
 	}
+	// gh is optional: without it we still push, but skip PR creation,
+	// retargeting, and stack linking. Users pushing to a non-GitHub remote
+	// or without gh installed get a useful degraded mode instead of an
+	// error.
+	ghAvailable := true
 	if !submitDryRun {
 		if err := ghx.Preflight(); err != nil {
-			return err
+			ghAvailable = false
+			fmt.Printf("(gh unavailable: %v)\n", err)
+			fmt.Println("  branches will be pushed; PR creation and stack linking are skipped")
 		}
 	}
 	repoRoot, err := gitx.RepoRoot()
@@ -116,7 +123,7 @@ func runSubmit(cmd *cobra.Command, args []string) error {
 		if br == current {
 			titleFor, bodyFor = titleOverride, bodyOverride
 		}
-		num, err := submitBranch(br, parent, draft, titleFor, bodyFor)
+		num, err := submitBranch(br, parent, draft, titleFor, bodyFor, ghAvailable)
 		if err != nil {
 			return err
 		}
@@ -127,8 +134,8 @@ func runSubmit(cmd *cobra.Command, args []string) error {
 
 	// Link the PRs into a stack on GitHub. Best-effort: on any error we log
 	// and continue — a failed link isn't worth abandoning already-created
-	// PRs. Skip in dry-run and when --no-stack.
-	if !submitDryRun && !submitNoStack && len(prNumbers) >= 2 {
+	// PRs. Skip in dry-run, when --no-stack, and when gh isn't available.
+	if !submitDryRun && !submitNoStack && ghAvailable && len(prNumbers) >= 2 {
 		if err := linkStack(prNumbers); err != nil {
 			fmt.Printf("(couldn't link PRs into a stack on GitHub: %v)\n", err)
 		}
@@ -224,9 +231,10 @@ func chainToTrunk(s *stack.Stack, current, trunk string) ([]string, error) {
 	return nil, nil
 }
 
-// submitBranch pushes the branch, then creates or retargets its PR.
-// Returns the PR's number (or 0 in dry-run) so the caller can link the stack.
-func submitBranch(branch, parent string, draft bool, titleOverride, bodyOverride string) (int, error) {
+// submitBranch pushes the branch, then (if gh is available) creates or
+// retargets its PR. Returns the PR's number, or 0 in dry-run / when gh is
+// unavailable / when no PR is touched.
+func submitBranch(branch, parent string, draft bool, titleOverride, bodyOverride string, ghAvailable bool) (int, error) {
 	if submitDryRun {
 		fmt.Printf("• %s → PR base=%s draft=%v (dry-run)\n", branch, parent, draft)
 		return 0, nil
@@ -237,6 +245,10 @@ func submitBranch(branch, parent string, draft bool, titleOverride, bodyOverride
 	fmt.Printf("↑ pushing %s\n", branch)
 	if err := gitx.PushForceWithLease("origin", branch); err != nil {
 		return 0, err
+	}
+
+	if !ghAvailable {
+		return 0, nil
 	}
 
 	pr, err := ghx.PRForBranch(branch)
