@@ -22,13 +22,17 @@ var syncCmd = &cobra.Command{
 
   1. Fetch origin with --prune, so remote-tracking refs for branches that
      have been deleted upstream get cleaned up.
-  2. Fast-forward trunk to origin/trunk, then restack every descendant.
-  3. Delete local branches whose remote counterpart is gone (PR closed
-     with branch deletion, PR merged with auto-delete, etc.) OR whose PR
-     is currently in MERGED state on GitHub. Only sb-tracked branches
-     (those with sbParent set) are eligible for pruning.
+  2. Fast-forward trunk to origin/trunk.
+  3. Detect stale branches — local branches whose remote counterpart is
+     gone OR whose PR is currently in MERGED state on GitHub. Only
+     sb-tracked branches are eligible.
+  4. Restack every remaining descendant. Detected-stale branches are
+     skipped so their now-squashed commits aren't replayed onto the new
+     trunk (which would conflict).
+  5. Reparent children of stale branches to their surviving ancestor,
+     then delete the stale branches.
 
-Pass --no-prune to skip step 3.`,
+Pass --no-prune to skip steps 3 and 5 (and restack everything).`,
 	RunE: runSync,
 }
 
@@ -89,11 +93,21 @@ func runSync(cmd *cobra.Command, args []string) error {
 		fmt.Printf("✓ %s: %s → %s\n", cfg.Trunk, short(trunkOldSha), short(trunkNewSha))
 	}
 
-	// Restack every descendant of trunk.
 	s, err := stack.Load(cfg.Trunk)
 	if err != nil {
 		return err
 	}
+
+	// Detect doomed branches BEFORE restacking. If a merged branch is still
+	// tracked locally, its commits are already squashed into trunk; rebasing
+	// it onto the new trunk replays those same commits and conflicts. So we
+	// figure out which branches are on the chopping block first and skip
+	// them (and their subtrees) during restack.
+	var doomed map[string]string
+	if !syncNoPrune && hasOrigin {
+		doomed = detectDoomed(s, cfg.Trunk)
+	}
+
 	oldBaseFor := func(branch string) string {
 		node := s.All[branch]
 		if node == nil || node.Parent == "" {
@@ -108,7 +122,11 @@ func runSync(cmd *cobra.Command, args []string) error {
 		}
 		return sha
 	}
-	steps, err := stack.BuildPlanForChildren(s, cfg.Trunk, oldBaseFor)
+	exclude := make(map[string]bool, len(doomed))
+	for b := range doomed {
+		exclude[b] = true
+	}
+	steps, err := stack.BuildPlanForChildren(s, cfg.Trunk, oldBaseFor, exclude)
 	if err != nil {
 		return err
 	}
@@ -124,19 +142,22 @@ func runSync(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if !syncNoPrune && hasOrigin {
-		return pruneStale(s, cfg.Trunk, current)
+	if !syncNoPrune && hasOrigin && len(doomed) > 0 {
+		return finishPrune(s, cfg.Trunk, current, doomed)
 	}
 	return nil
 }
 
-// pruneStale deletes sb-tracked branches whose remote is gone or whose PR
-// has been merged. "Gone from origin" is detected via git's upstream-track
-// info (populated by the earlier fetch --prune) and doesn't require gh.
-// The merged-PR check requires gh; if gh is missing or unauthed, only the
-// gone-upstream half runs.
-func pruneStale(s *stack.Stack, trunk, current string) error {
-	// Tracked candidates only — never delete branches sb doesn't manage.
+// detectDoomed returns sb-tracked branches whose remote is gone or whose PR
+// has been merged, keyed to a human-readable reason. "Gone from origin" is
+// detected via git's upstream-track info (populated by the earlier fetch
+// --prune) and doesn't require gh. The merged-PR check requires gh; if gh is
+// missing or unauthed, only the gone-upstream half runs.
+//
+// Called before restack so sync can skip these branches when planning
+// rebases — merged branches have already been squashed into trunk, and
+// replaying their commits onto the new trunk would conflict.
+func detectDoomed(s *stack.Stack, trunk string) map[string]string {
 	tracked := make(map[string]bool, len(s.All))
 	var candidates []string
 	for name := range s.All {
@@ -154,8 +175,6 @@ func pruneStale(s *stack.Stack, trunk, current string) error {
 
 	toDelete := map[string]string{} // branch → reason
 
-	// Gone-upstream: remote branch was deleted (PR closed w/ delete, merge
-	// w/ auto-delete, or a manual delete on origin).
 	gone, err := gitx.BranchesWithGoneUpstream()
 	if err != nil {
 		fmt.Printf("(couldn't list gone-upstream branches: %v)\n", err)
@@ -166,8 +185,6 @@ func pruneStale(s *stack.Stack, trunk, current string) error {
 		}
 	}
 
-	// Merged-PR: gh reports the branch as having a MERGED PR (branch might
-	// still exist on origin if auto-delete is off).
 	if _, err := exec.LookPath("gh"); err != nil {
 		fmt.Println("(gh not installed — skipping merged-PR check)")
 	} else if err := exec.Command("gh", "auth", "status").Run(); err != nil {
@@ -183,10 +200,13 @@ func pruneStale(s *stack.Stack, trunk, current string) error {
 			}
 		}
 	}
+	return toDelete
+}
 
-	if len(toDelete) == 0 {
-		return nil
-	}
+// finishPrune reparents children of doomed branches to their surviving
+// ancestor, then deletes the doomed branches. The doomed set must have been
+// produced by detectDoomed on the same stack `s` in this invocation.
+func finishPrune(s *stack.Stack, trunk, current string, toDelete map[string]string) error {
 	// Before deleting anything, reparent every tracked child of a doomed
 	// branch so we don't leave orphans in the tree. A child's new parent is
 	// the first non-doomed ancestor walking up sbParent — usually just the

@@ -55,7 +55,7 @@ func runRestack(cmd *cobra.Command, args []string) error {
 		}
 		return sha
 	}
-	steps, err := stack.BuildPlanForChildren(s, current, oldBaseFor)
+	steps, err := stack.BuildPlanForChildren(s, current, oldBaseFor, nil)
 	if err != nil {
 		return err
 	}

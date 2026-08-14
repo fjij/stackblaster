@@ -363,6 +363,73 @@ func TestSync_PrunesMergedBranches(t *testing.T) {
 	}
 }
 
+// TestSync_SkipsRestackingMergedBranches is a regression test for a bug
+// where `sb sync` attempted to rebase a merged branch onto the new trunk —
+// but the branch's commits have already been squashed into trunk, so
+// replaying them raises a conflict. Sync should detect the doomed branches
+// before restacking and skip them.
+//
+// The scenario: user finishes reviewing a stack, all PRs get merged
+// (squash-merges land on trunk), user runs `sb sync` while still checked
+// out on the tip. Before this fix, sync would fail with a rebase conflict.
+func TestSync_SkipsRestackingMergedBranches(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+	testutil.SetupBareOrigin(t, r)
+	gh := testutil.SetupGhStub(t)
+
+	// main → A → B. Both will be "merged".
+	r.WriteFile("shared.txt", "a-version\n")
+	r.MustGit("add", "shared.txt")
+	branchA := mustCreate(t, "a")
+	r.WriteFile("b.txt", "b\n")
+	r.MustGit("add", "b.txt")
+	branchB := mustCreate(t, "b")
+
+	// Snapshot local main's SHA so we can rewind it after "pushing" the
+	// squash-merge to origin. The scenario we need: origin/main is AHEAD of
+	// local main, and the diff between them touches a file that A also
+	// creates. If sync tried to rebase A onto the fast-forwarded main,
+	// git would replay A's add-file commit onto a tree that already has
+	// that file → conflict.
+	if err := gitx.Checkout("main"); err != nil {
+		t.Fatal(err)
+	}
+	originalMain, err := gitx.HeadSha("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.WriteFile("shared.txt", "squashed content\n")
+	r.MustGit("add", "shared.txt")
+	r.MustGit("commit", "-qm", "squash A and B")
+	// Push the "merged" state to origin, then rewind local main so
+	// fast-forward has something to actually pull in during sync.
+	r.MustGit("push", "-q", "origin", "main")
+	r.MustGit("reset", "--hard", "-q", originalMain)
+
+	// Return to B — reproduces the bug's real-world trigger: user runs sync
+	// from the tip of a fully-merged stack.
+	if err := gitx.Checkout(branchB); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetMerged(branchA, branchB)
+
+	resetFlags()
+	if err := runSync(nil, nil); err != nil {
+		t.Fatalf("sync unexpectedly errored (was previously a rebase conflict): %v", err)
+	}
+
+	// Both branches should be pruned; current branch should have hopped to main.
+	for _, b := range []string{branchA, branchB} {
+		if exists, _ := gitx.BranchExists(b); exists {
+			t.Errorf("expected %s to be pruned; still exists", b)
+		}
+	}
+	if cur, _ := gitx.CurrentBranch(); cur != "main" {
+		t.Errorf("expected to be on main after prune; got %s", cur)
+	}
+}
+
 // parseCreateArgs pulls --head and --base out of a `pr create ...` argv slice.
 func parseCreateArgs(argv []string) (head, base string) {
 	for i := 0; i < len(argv); i++ {
