@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -21,11 +20,8 @@ func init() {
 }
 
 func runContinue(cmd *cobra.Command, args []string) error {
-	if err := gitx.Preflight(); err != nil {
+	if _, err := loadContext(); err != nil {
 		return err
-	}
-	if _, err := gitx.RepoRoot(); err != nil {
-		return errors.New("must be run inside a git repository")
 	}
 
 	if gitx.RebaseInProgress() {

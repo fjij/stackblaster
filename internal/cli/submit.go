@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -58,8 +57,16 @@ func init() {
 }
 
 func runSubmit(cmd *cobra.Command, args []string) error {
-	if err := gitx.Preflight(); err != nil {
+	ctx, s, err := loadStackContext()
+	if err != nil {
 		return err
+	}
+	if err := ctx.requireCurrent(); err != nil {
+		return err
+	}
+	current, cfg := ctx.Current, ctx.Cfg
+	if current == cfg.Trunk {
+		return fmt.Errorf("refusing to submit trunk (%s)", cfg.Trunk)
 	}
 	// gh is optional: without it we still push, but skip PR creation,
 	// retargeting, and stack linking. Users pushing to a non-GitHub remote
@@ -72,26 +79,6 @@ func runSubmit(cmd *cobra.Command, args []string) error {
 			fmt.Printf("(gh unavailable: %v)\n", err)
 			fmt.Println("  branches will be pushed; PR creation and stack linking are skipped")
 		}
-	}
-	repoRoot, err := gitx.RepoRoot()
-	if err != nil {
-		return errors.New("must be run inside a git repository")
-	}
-	cfg, err := config.Load(repoRoot)
-	if err != nil {
-		return err
-	}
-	current, err := gitx.CurrentBranch()
-	if err != nil {
-		return err
-	}
-	if current == cfg.Trunk {
-		return fmt.Errorf("refusing to submit trunk (%s)", cfg.Trunk)
-	}
-
-	s, err := stack.Load(cfg.Trunk)
-	if err != nil {
-		return err
 	}
 	chain, err := chainToTrunk(s, current, cfg.Trunk)
 	if err != nil {

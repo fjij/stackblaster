@@ -1,14 +1,12 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/fjij/stackblaster/internal/config"
 	"github.com/fjij/stackblaster/internal/gitx"
 	"github.com/fjij/stackblaster/internal/stack"
 )
@@ -42,18 +40,11 @@ func init() {
 }
 
 func runSync(cmd *cobra.Command, args []string) error {
-	if err := gitx.Preflight(); err != nil {
-		return err
-	}
-	repoRoot, err := gitx.RepoRoot()
-	if err != nil {
-		return errors.New("must be run inside a git repository")
-	}
-	cfg, err := config.Load(repoRoot)
+	ctx, err := loadContext()
 	if err != nil {
 		return err
 	}
-	current, _ := gitx.CurrentBranch()
+	cfg, current := ctx.Cfg, ctx.Current
 
 	hasOrigin, err := gitx.RemoteExists("origin")
 	if err != nil {

@@ -6,7 +6,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/fjij/stackblaster/internal/config"
 	"github.com/fjij/stackblaster/internal/gitx"
 	"github.com/fjij/stackblaster/internal/stack"
 )
@@ -39,21 +38,14 @@ func init() {
 }
 
 func runModify(cmd *cobra.Command, args []string) error {
-	if err := gitx.Preflight(); err != nil {
-		return err
-	}
-	repoRoot, err := gitx.RepoRoot()
-	if err != nil {
-		return errors.New("must be run inside a git repository")
-	}
-	cfg, err := config.Load(repoRoot)
+	ctx, err := loadContext()
 	if err != nil {
 		return err
 	}
-	current, err := gitx.CurrentBranch()
-	if err != nil {
-		return fmt.Errorf("resolve current branch: %w", err)
+	if err := ctx.requireCurrent(); err != nil {
+		return err
 	}
+	current, cfg := ctx.Current, ctx.Cfg
 	if current == cfg.Trunk {
 		return fmt.Errorf("refusing to modify trunk (%s)", cfg.Trunk)
 	}

@@ -54,26 +54,14 @@ func init() {
 }
 
 func loadStackAndCurrent() (*stack.Stack, string, config.Config, error) {
-	if err := gitx.Preflight(); err != nil {
+	ctx, s, err := loadStackContext()
+	if err != nil {
 		return nil, "", config.Config{}, err
 	}
-	repoRoot, err := gitx.RepoRoot()
-	if err != nil {
-		return nil, "", config.Config{}, errors.New("must be run inside a git repository")
+	if err := ctx.requireCurrent(); err != nil {
+		return nil, "", ctx.Cfg, err
 	}
-	cfg, err := config.Load(repoRoot)
-	if err != nil {
-		return nil, "", cfg, err
-	}
-	current, err := gitx.CurrentBranch()
-	if err != nil {
-		return nil, "", cfg, err
-	}
-	s, err := stack.Load(cfg.Trunk)
-	if err != nil {
-		return nil, "", cfg, err
-	}
-	return s, current, cfg, nil
+	return s, ctx.Current, ctx.Cfg, nil
 }
 
 // parseHopCount parses an optional positional "N" argument. N must be a

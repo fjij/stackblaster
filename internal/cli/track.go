@@ -6,7 +6,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/fjij/stackblaster/internal/config"
 	"github.com/fjij/stackblaster/internal/gitx"
 	"github.com/fjij/stackblaster/internal/tui"
 )
@@ -34,21 +33,14 @@ func init() {
 }
 
 func runTrack(cmd *cobra.Command, args []string) error {
-	if err := gitx.Preflight(); err != nil {
-		return err
-	}
-	repoRoot, err := gitx.RepoRoot()
-	if err != nil {
-		return errors.New("must be run inside a git repository")
-	}
-	cfg, err := config.Load(repoRoot)
+	ctx, err := loadContext()
 	if err != nil {
 		return err
 	}
-	current, err := gitx.CurrentBranch()
-	if err != nil {
+	if err := ctx.requireCurrent(); err != nil {
 		return err
 	}
+	current, cfg := ctx.Current, ctx.Cfg
 	if current == cfg.Trunk {
 		return fmt.Errorf("refusing to track trunk (%s)", cfg.Trunk)
 	}
@@ -113,19 +105,16 @@ func pickParentForTrack(current, trunk string) (string, error) {
 }
 
 func runUntrack(cmd *cobra.Command, args []string) error {
-	if err := gitx.Preflight(); err != nil {
-		return err
-	}
-	if _, err := gitx.RepoRoot(); err != nil {
-		return errors.New("must be run inside a git repository")
-	}
-	current, err := gitx.CurrentBranch()
+	ctx, err := loadContext()
 	if err != nil {
 		return err
 	}
-	if err := gitx.UnsetConfig("branch." + current + ".sbParent"); err != nil {
+	if err := ctx.requireCurrent(); err != nil {
 		return err
 	}
-	fmt.Printf("✓ untracked %s\n", current)
+	if err := gitx.UnsetConfig("branch." + ctx.Current + ".sbParent"); err != nil {
+		return err
+	}
+	fmt.Printf("✓ untracked %s\n", ctx.Current)
 	return nil
 }

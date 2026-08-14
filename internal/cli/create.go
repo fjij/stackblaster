@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/fjij/stackblaster/internal/config"
 	"github.com/fjij/stackblaster/internal/gitx"
 )
 
@@ -33,27 +32,19 @@ func init() {
 }
 
 func runCreate(cmd *cobra.Command, args []string) error {
-	if err := gitx.Preflight(); err != nil {
+	ctx, err := loadContext()
+	if err != nil {
 		return err
 	}
-	repoRoot, err := gitx.RepoRoot()
-	if err != nil {
-		return fmt.Errorf("must be run inside a git repository")
-	}
-	cfg, err := config.Load(repoRoot)
-	if err != nil {
+	if err := ctx.requireCurrent(); err != nil {
 		return err
 	}
 	if strings.TrimSpace(createMsg) == "" {
 		return errors.New("-m/--message is required (interactive prompt coming soon)")
 	}
 
-	parent, err := gitx.CurrentBranch()
-	if err != nil {
-		return fmt.Errorf("resolve current branch: %w", err)
-	}
-
-	name := branchName(cfg.BranchPrefix, cfg.DateFormat, createMsg)
+	parent := ctx.Current
+	name := branchName(ctx.Cfg.BranchPrefix, ctx.Cfg.DateFormat, createMsg)
 
 	if err := gitx.CheckoutNew(name); err != nil {
 		return err

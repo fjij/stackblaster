@@ -2,13 +2,13 @@
 package ghx
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/fjij/stackblaster/internal/execx"
 )
 
 var (
@@ -34,18 +34,7 @@ func Preflight() error {
 }
 
 func run(args ...string) (string, error) {
-	var stdout, stderr bytes.Buffer
-	cmd := exec.Command("gh", args...)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
-		}
-		return "", fmt.Errorf("gh %s: %s", strings.Join(args, " "), msg)
-	}
-	return strings.TrimSpace(stdout.String()), nil
+	return execx.Run("gh", args...)
 }
 
 // PRInfo is the subset of gh pr view output we care about.
@@ -124,11 +113,7 @@ func SetPRBase(branch, base string) error {
 // Passthrough runs `gh` with stdio wired to the terminal — useful for auth or
 // diagnostic commands we don't parse.
 func Passthrough(args ...string) error {
-	cmd := exec.Command("gh", args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return execx.Interactive("gh", args...)
 }
 
 // --- GitHub Stacked PRs REST API --------------------------------------------
@@ -242,26 +227,14 @@ func apiGet(path string) (string, error) {
 // apiPost runs `gh api <path> --method POST` with the given JSON body piped
 // on stdin and the stacked-PRs API version pinned.
 func apiPost(path, body string) (string, error) {
-	var stdout, stderr bytes.Buffer
-	cmd := exec.Command(
-		"gh", "api",
+	return execx.RunStdin("gh", body,
+		"api",
 		"--method", "POST",
 		"-H", "Content-Type: application/json",
 		"-H", "X-GitHub-Api-Version: "+stackAPIVersion,
 		"--input", "-",
 		path,
 	)
-	cmd.Stdin = strings.NewReader(body)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
-		}
-		return "", fmt.Errorf("gh api POST %s: %s", path, msg)
-	}
-	return strings.TrimSpace(stdout.String()), nil
 }
 
 func is404(err error) bool {
