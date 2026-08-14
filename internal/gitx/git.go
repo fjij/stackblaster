@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/fjij/stackblaster/internal/execx"
 )
 
 // ErrNotFound is returned by Preflight when the git binary is missing.
@@ -29,29 +31,17 @@ func Preflight() error {
 	return nil
 }
 
+// run executes a subprocess and returns trimmed stdout. Historically this took
+// the program name as the first argument; every call site passes "git", so
+// callers still use `run("git", ...)`. See execx.Run for the shared impl.
 func run(name string, args ...string) (string, error) {
-	var stdout, stderr bytes.Buffer
-	cmd := exec.Command(name, args...)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
-		}
-		return "", fmt.Errorf("%s: %s", strings.Join(append([]string{name}, args...), " "), msg)
-	}
-	return strings.TrimSpace(stdout.String()), nil
+	return execx.Run(name, args...)
 }
 
 // runInteractive runs git with stdin/stdout/stderr wired to the terminal, so
 // operations like `rebase` can prompt the user (editor, conflict resolution).
 func runInteractive(args ...string) error {
-	cmd := exec.Command("git", args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return execx.Interactive("git", args...)
 }
 
 func RepoRoot() (string, error) {

@@ -1,12 +1,10 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
 
-	"github.com/fjij/stackblaster/internal/config"
 	"github.com/fjij/stackblaster/internal/gitx"
 	"github.com/fjij/stackblaster/internal/stack"
 )
@@ -22,25 +20,14 @@ func init() {
 }
 
 func runRestack(cmd *cobra.Command, args []string) error {
-	if err := gitx.Preflight(); err != nil {
-		return err
-	}
-	repoRoot, err := gitx.RepoRoot()
-	if err != nil {
-		return errors.New("must be run inside a git repository")
-	}
-	cfg, err := config.Load(repoRoot)
+	ctx, s, err := loadStackContext()
 	if err != nil {
 		return err
 	}
-	current, err := gitx.CurrentBranch()
-	if err != nil {
+	if err := ctx.requireCurrent(); err != nil {
 		return err
 	}
-	s, err := stack.Load(cfg.Trunk)
-	if err != nil {
-		return err
-	}
+	current := ctx.Current
 	// oldBase = parent's current tip. That's correct only when children still
 	// point at commits reachable from that tip; if the user has manually moved
 	// things around, they should pass --onto explicitly (future flag).

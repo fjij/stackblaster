@@ -7,7 +7,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
-	"github.com/fjij/stackblaster/internal/config"
 	"github.com/fjij/stackblaster/internal/gitx"
 	"github.com/fjij/stackblaster/internal/stack"
 	"github.com/fjij/stackblaster/internal/tui"
@@ -62,22 +61,11 @@ type branchStatus struct {
 }
 
 func runLog(cmd *cobra.Command, args []string) error {
-	if err := gitx.Preflight(); err != nil {
-		return err
-	}
-	repoRoot, err := gitx.RepoRoot()
-	if err != nil {
-		return fmt.Errorf("must be run inside a git repository")
-	}
-	cfg, err := config.Load(repoRoot)
+	ctx, st, err := loadStackContext()
 	if err != nil {
 		return err
 	}
-	st, err := stack.Load(cfg.Trunk)
-	if err != nil {
-		return err
-	}
-	current, _ := gitx.CurrentBranch()
+	cfg, current := ctx.Cfg, ctx.Current
 
 	// Precompute status for every tracked branch (except trunk). Cheap: a
 	// couple git calls per branch, all local.
