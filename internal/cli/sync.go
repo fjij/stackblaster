@@ -134,7 +134,8 @@ func runSync(cmd *cobra.Command, args []string) error {
 	}
 
 	if !syncNoPrune && hasOrigin && len(doomed) > 0 {
-		return finishPrune(s, cfg.Trunk, current, doomed)
+		prunePlan := buildPrunePlan(s, cfg.Trunk, current, doomed)
+		return executePrunePlan(prunePlan, cfg.Trunk, current)
 	}
 	return nil
 }
@@ -194,43 +195,29 @@ func detectDoomed(s *stack.Stack, trunk string) map[string]string {
 	return toDelete
 }
 
-// finishPrune reparents children of doomed branches to their surviving
-// ancestor, then deletes the doomed branches. The doomed set must have been
-// produced by detectDoomed on the same stack `s` in this invocation.
-func finishPrune(s *stack.Stack, trunk, current string, toDelete map[string]string) error {
-	// Before deleting anything, reparent every tracked child of a doomed
-	// branch so we don't leave orphans in the tree. A child's new parent is
-	// the first non-doomed ancestor walking up sbParent — usually just the
-	// doomed branch's own sbParent, but if two branches in a row are being
-	// pruned we skip over both.
-	for b := range toDelete {
-		node := s.All[b]
-		if node == nil {
+// executePrunePlan applies the reparents and deletions from a PrunePlan.
+// Best-effort per step — individual failures are logged and skipped so a
+// single stuck branch doesn't block the rest of the sweep.
+func executePrunePlan(plan *PrunePlan, trunk, current string) error {
+	for _, r := range plan.Reparents {
+		if err := gitx.SetConfig("branch."+r.Branch+".sbParent", r.NewParent); err != nil {
+			fmt.Printf("(couldn't reparent %s → %s: %v)\n", r.Branch, r.NewParent, err)
 			continue
 		}
-		newParent := resolveSurvivor(s, node.Parent, toDelete, trunk)
-		for _, child := range node.Children {
-			if _, alsoDoomed := toDelete[child.Name]; alsoDoomed {
-				continue // child is going away too; nothing to reparent
-			}
-			if err := gitx.SetConfig("branch."+child.Name+".sbParent", newParent); err != nil {
-				fmt.Printf("(couldn't reparent %s → %s: %v)\n", child.Name, newParent, err)
-				continue
-			}
-			fmt.Printf("↔ reparented %s: %s → %s\n", child.Name, b, newParent)
-		}
+		fmt.Printf("↔ reparented %s: %s → %s\n", r.Branch, r.OldParent, r.NewParent)
 	}
 
 	// If we're about to prune the currently checked-out branch, hop to trunk
 	// first so the delete can proceed. Git won't let us delete the branch
 	// we're on.
-	if _, hitCurrent := toDelete[current]; hitCurrent {
+	if plan.HopToTrunk {
 		if err := gitx.Checkout(trunk); err != nil {
 			return fmt.Errorf("couldn't check out %s before pruning current branch: %w", trunk, err)
 		}
 		fmt.Printf("↩ switched to %s to prune %s\n", trunk, current)
 	}
-	for b, reason := range toDelete {
+	for _, b := range plan.Delete {
+		reason := plan.Doomed[b]
 		if err := gitx.DeleteBranch(b); err != nil {
 			fmt.Printf("(couldn't delete %s: %v)\n", b, err)
 			continue
@@ -240,26 +227,6 @@ func finishPrune(s *stack.Stack, trunk, current string, toDelete map[string]stri
 		fmt.Printf("✂  pruned %s (%s)\n", b, reason)
 	}
 	return nil
-}
-
-// resolveSurvivor walks up the sbParent chain from `start` and returns the
-// first branch not in `doomed`. Falls back to `trunk` if we walk off the
-// tree or the whole chain is doomed.
-func resolveSurvivor(s *stack.Stack, start string, doomed map[string]string, trunk string) string {
-	name := start
-	seen := map[string]bool{}
-	for name != "" && !seen[name] {
-		if _, isDoomed := doomed[name]; !isDoomed {
-			return name
-		}
-		seen[name] = true
-		node, ok := s.All[name]
-		if !ok {
-			break
-		}
-		name = node.Parent
-	}
-	return trunk
 }
 
 // mergedBranches returns the subset of `branches` whose PRs are in MERGED state

@@ -8,10 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/fjij/stackblaster/internal/config"
 	"github.com/fjij/stackblaster/internal/ghx"
 	"github.com/fjij/stackblaster/internal/gitx"
-	"github.com/fjij/stackblaster/internal/stack"
 )
 
 var (
@@ -80,15 +78,20 @@ func runSubmit(cmd *cobra.Command, args []string) error {
 			fmt.Println("  branches will be pushed; PR creation and stack linking are skipped")
 		}
 	}
-	chain, err := chainToTrunk(s, current, cfg.Trunk)
+	plan, err := buildSubmitPlan(s, current, cfg.Trunk, cfg, SubmitOpts{
+		Ready:   submitReady,
+		Draft:   submitDraft,
+		NoStack: submitNoStack,
+		Focus:   current,
+	})
 	if err != nil {
 		return err
 	}
-	if len(chain) == 0 {
+	if plan == nil {
 		return fmt.Errorf("current branch %q is not tracked to trunk — run `sb track --parent %s`", current, cfg.Trunk)
 	}
 
-	// Optional per-invocation overrides for the current branch only.
+	// Optional per-invocation overrides applied to the focus branch's PR.
 	var titleOverride, bodyOverride string
 	if submitTitle != "" {
 		titleOverride = submitTitle
@@ -101,16 +104,13 @@ func runSubmit(cmd *cobra.Command, args []string) error {
 		bodyOverride = string(b)
 	}
 
-	// Bottom-to-top so parents exist before children reference them.
-	draft := decideDraft(cfg, submitReady, submitDraft)
-	prNumbers := make([]int, 0, len(chain))
-	for _, br := range chain {
-		parent := s.All[br].Parent
+	prNumbers := make([]int, 0, len(plan.Steps))
+	for _, step := range plan.Steps {
 		var titleFor, bodyFor string
-		if br == current {
+		if step.IsFocus {
 			titleFor, bodyFor = titleOverride, bodyOverride
 		}
-		num, err := submitBranch(br, parent, draft, titleFor, bodyFor, ghAvailable)
+		num, err := submitBranch(step.Branch, step.Parent, plan.Draft, titleFor, bodyFor, ghAvailable)
 		if err != nil {
 			return err
 		}
@@ -121,8 +121,9 @@ func runSubmit(cmd *cobra.Command, args []string) error {
 
 	// Link the PRs into a stack on GitHub. Best-effort: on any error we log
 	// and continue — a failed link isn't worth abandoning already-created
-	// PRs. Skip in dry-run, when --no-stack, and when gh isn't available.
-	if !submitDryRun && !submitNoStack && ghAvailable && len(prNumbers) >= 2 {
+	// PRs. Skip in dry-run, when the plan opted out, and when gh isn't
+	// available.
+	if !submitDryRun && plan.LinkStack && ghAvailable && len(prNumbers) >= 2 {
 		if err := linkStack(prNumbers); err != nil {
 			fmt.Printf("(couldn't link PRs into a stack on GitHub: %v)\n", err)
 		}
@@ -180,42 +181,6 @@ func linkStack(prNumbers []int) error {
 	}
 	fmt.Printf("🔗 added %d PR(s) to stack #%d on GitHub\n", len(missing), s.Number)
 	return nil
-}
-
-func decideDraft(cfg config.Config, ready, draft bool) bool {
-	if draft {
-		return true
-	}
-	if ready {
-		return false
-	}
-	return cfg.DraftByDefault
-}
-
-// chainToTrunk returns branches from bottom (just above trunk) to top
-// (current). Returns nil if the chain doesn't reach trunk.
-func chainToTrunk(s *stack.Stack, current, trunk string) ([]string, error) {
-	var reversed []string
-	name := current
-	seen := map[string]bool{}
-	for name != "" && !seen[name] {
-		seen[name] = true
-		if name == trunk {
-			// Reverse and return (excluding trunk).
-			out := make([]string, len(reversed))
-			for i, b := range reversed {
-				out[len(reversed)-1-i] = b
-			}
-			return out, nil
-		}
-		reversed = append(reversed, name)
-		node, ok := s.All[name]
-		if !ok || node.Parent == "" {
-			return nil, nil
-		}
-		name = node.Parent
-	}
-	return nil, nil
 }
 
 // submitBranch pushes the branch, then (if gh is available) creates or
