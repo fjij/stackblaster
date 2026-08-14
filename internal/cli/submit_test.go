@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -251,6 +252,45 @@ func TestSubmit_NoStackFlagSkipsLinking(t *testing.T) {
 		if len(argv) >= 2 && argv[0] == "api" && strings.Contains(strings.Join(argv, " "), "/stacks") {
 			t.Fatalf("expected no /stacks calls under --no-stack, got: %v", argv)
 		}
+	}
+}
+
+// TestSubmit_DegradesGracefullyWithoutGh verifies that submit still pushes
+// branches when gh is unavailable, just skipping PR creation/retargeting and
+// stack linking. Simulated by making the gh stub report unauthed.
+func TestSubmit_DegradesGracefullyWithoutGh(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+	bare := testutil.SetupBareOrigin(t, r)
+	gh := testutil.SetupGhStub(t)
+	gh.SetUnauthed()
+
+	// main → A
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	branchA := mustCreate(t, "a")
+
+	resetFlags()
+	if err := runSubmit(nil, nil); err != nil {
+		t.Fatalf("submit should not error when gh is unavailable: %v", err)
+	}
+
+	// No `pr` or `api` gh calls should have happened after the auth check
+	// failed. `auth status` is expected.
+	for _, argv := range gh.Calls() {
+		if len(argv) < 1 {
+			continue
+		}
+		switch argv[0] {
+		case "pr", "api":
+			t.Errorf("expected no %q calls when gh is unavailable, got: %v", argv[0], argv)
+		}
+	}
+
+	// The branch must have been pushed to origin regardless.
+	out, err := exec.Command("git", "--git-dir", bare, "rev-parse", "--verify", branchA).CombinedOutput()
+	if err != nil {
+		t.Fatalf("expected %s to exist on origin, got: %v\n%s", branchA, err, out)
 	}
 }
 
