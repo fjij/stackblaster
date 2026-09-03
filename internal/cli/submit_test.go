@@ -470,6 +470,90 @@ func TestSync_SkipsRestackingMergedBranches(t *testing.T) {
 	}
 }
 
+// TestSync_RestacksDescendantsOfPrunedBranch is a regression test for the
+// case where a merged branch had unmerged children beneath it. sb sync must
+// restack those children onto the surviving ancestor (typically trunk) —
+// otherwise their sbParent gets rewritten but their git history is still
+// rooted on the now-deleted merged branch, leaving them permanently out of
+// date.
+func TestSync_RestacksDescendantsOfPrunedBranch(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+	testutil.SetupBareOrigin(t, r)
+	gh := testutil.SetupGhStub(t)
+
+	// main → A → B. A will be "merged" (squashed into origin/main); B stays.
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	branchA := mustCreate(t, "a")
+	r.WriteFile("b.txt", "b\n")
+	r.MustGit("add", "b.txt")
+	branchB := mustCreate(t, "b")
+
+	// Simulate a squash-merge of A landing on origin/main.
+	if err := gitx.Checkout("main"); err != nil {
+		t.Fatal(err)
+	}
+	originalMain, err := gitx.HeadSha("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	r.MustGit("commit", "-qm", "squash A")
+	r.MustGit("push", "-q", "origin", "main")
+	r.MustGit("reset", "--hard", "-q", originalMain)
+
+	// Return to B — the checked-out tip of the stack — before syncing.
+	if err := gitx.Checkout(branchB); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetMerged(branchA)
+
+	resetFlags()
+	if err := runSync(nil, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	// A is pruned; B survives.
+	if exists, _ := gitx.BranchExists(branchA); exists {
+		t.Fatalf("expected %s to be pruned", branchA)
+	}
+	if exists, _ := gitx.BranchExists(branchB); !exists {
+		t.Fatalf("expected %s to survive", branchB)
+	}
+
+	// sbParent was reparented to main.
+	parent, err := gitx.GetConfig("branch." + branchB + ".sbParent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent != "main" {
+		t.Fatalf("expected %s.sbParent = main, got %q", branchB, parent)
+	}
+
+	// The critical check: B's git parent commit must now be main's new tip.
+	// Before the fix, sync would skip B along with A's subtree, leaving B
+	// rooted on the old A tip (which is no longer in any branch's history).
+	mainTip := r.Head("main")
+	bParent := r.Head(branchB + "^")
+	if bParent != mainTip {
+		t.Fatalf("B's git parent should be new main (%s), got %s — B was not restacked",
+			mainTip, bParent)
+	}
+
+	// Working tree should contain both a.txt (from the squash on main) and
+	// b.txt (from B's own commit).
+	if err := gitx.Checkout(branchB); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"a.txt", "b.txt"} {
+		if _, err := os.Stat(filepath.Join(r.Dir, f)); err != nil {
+			t.Errorf("%s missing on B after sync: %v", f, err)
+		}
+	}
+}
+
 // parseCreateArgs pulls --head and --base out of a `pr create ...` argv slice.
 func parseCreateArgs(argv []string) (head, base string) {
 	for i := 0; i < len(argv); i++ {
