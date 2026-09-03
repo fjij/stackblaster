@@ -38,32 +38,43 @@ type Plan struct {
 // old SHA of its parent branch at the time we started (i.e., before the
 // user's amend or before sync fast-forwarded trunk).
 //
-// Branches in `exclude` (and their whole subtrees) are skipped entirely. Used
-// by sb sync to avoid rebasing branches whose PR has been merged: rebasing
-// them onto the new trunk replays their now-squashed commits and conflicts.
-// Pass nil to plan every descendant.
+// Branches in `exclude` are skipped (no rebase step is emitted for them), but
+// their descendants are still restacked — onto the closest non-excluded
+// ancestor. Used by sb sync to skip branches whose PR has been merged (their
+// commits are already squashed into trunk, so replaying them would conflict)
+// while still moving their surviving children onto the new trunk. Pass nil
+// to plan every descendant.
 func BuildPlanForChildren(s *Stack, root string, oldBaseFor func(branch string) string, exclude map[string]bool) ([]Step, error) {
 	rootNode, ok := s.All[root]
 	if !ok {
 		return nil, fmt.Errorf("branch %q not tracked", root)
 	}
 	var steps []Step
-	// BFS so parents are rebased before their children.
-	queue := []*Node{rootNode}
+	// BFS so parents are rebased before their children. `survivor` is the
+	// branch name that this node's children should use as their NewBase — the
+	// nearest ancestor that isn't in `exclude`. For non-excluded nodes it's
+	// the node itself; for excluded nodes it's inherited from above.
+	type item struct {
+		node     *Node
+		survivor string
+	}
+	queue := []item{{node: rootNode, survivor: rootNode.Name}}
 	for len(queue) > 0 {
-		n := queue[0]
+		it := queue[0]
 		queue = queue[1:]
-		for _, c := range n.Children {
+		for _, c := range it.node.Children {
 			if exclude[c.Name] {
-				continue // skip both the rebase and the whole subtree
+				// Skip the rebase for c, but keep walking — its children
+				// need to be restacked onto the survivor above c.
+				queue = append(queue, item{node: c, survivor: it.survivor})
+				continue
 			}
-			old := oldBaseFor(c.Name)
 			steps = append(steps, Step{
 				Branch:  c.Name,
-				NewBase: n.Name, // resolved to a SHA at execution time
-				OldBase: old,
+				NewBase: it.survivor, // resolved to a SHA at execution time
+				OldBase: oldBaseFor(c.Name),
 			})
-			queue = append(queue, c)
+			queue = append(queue, item{node: c, survivor: c.Name})
 		}
 	}
 	return steps, nil
