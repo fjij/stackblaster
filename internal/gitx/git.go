@@ -252,6 +252,45 @@ func RebaseOnto(newBase, oldBase, branch string) error {
 	return fmt.Errorf("git rebase --onto %s %s %s: %w", newBase, oldBase, branch, err)
 }
 
+// RebaseInWorktree rebases the branch checked out in the worktree at path. It
+// refuses a dirty worktree and aborts on conflict, so it never leaves another
+// checkout mid-rebase.
+func RebaseInWorktree(path, newBase, oldBase string) error {
+	dirty, err := run("git", "-C", path, "status", "--porcelain", "--untracked-files=no")
+	if err != nil {
+		return err
+	}
+	if dirty != "" {
+		return fmt.Errorf("uncommitted changes in %s", path)
+	}
+	if _, err := run("git", "-C", path, "rebase", "--onto", newBase, oldBase); err != nil {
+		_, _ = run("git", "-C", path, "rebase", "--abort")
+		return fmt.Errorf("rebase in %s failed and was aborted", path)
+	}
+	return nil
+}
+
+// WorktreeBranches maps each branch checked out in another worktree to that
+// worktree's path. The current worktree's branch is left out.
+func WorktreeBranches() (map[string]string, error) {
+	out, err := run("git", "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+	current, _ := CurrentBranch()
+	branches := map[string]string{}
+	var path string
+	for _, line := range strings.Split(out, "\n") {
+		if p, ok := strings.CutPrefix(line, "worktree "); ok {
+			path = p
+		}
+		if b, ok := strings.CutPrefix(line, "branch refs/heads/"); ok && b != current {
+			branches[b] = path
+		}
+	}
+	return branches, nil
+}
+
 // ErrRebaseConflict is returned by rebase helpers when git leaves a rebase in
 // progress (conflict, or user asked to edit).
 var ErrRebaseConflict = errors.New("rebase paused (likely a conflict) — resolve and run `sb continue`")
@@ -400,14 +439,23 @@ func PushForceWithLease(remote, branch string) error {
 }
 
 // FastForward moves branch to target, without checking it out. If branch is
-// checked out, we fall back to `git merge --ff-only`.
+// checked out here or in another worktree, we fall back to `git merge
+// --ff-only` in that worktree.
 func FastForward(branch, target string) error {
 	current, _ := CurrentBranch()
 	if current == branch {
 		_, err := run("git", "merge", "--ff-only", target)
 		return err
 	}
-	_, err := run("git", "branch", "-f", branch, target)
+	worktrees, err := WorktreeBranches()
+	if err != nil {
+		return err
+	}
+	if path, ok := worktrees[branch]; ok {
+		_, err := run("git", "-C", path, "merge", "--ff-only", target)
+		return err
+	}
+	_, err = run("git", "branch", "-f", branch, target)
 	return err
 }
 
