@@ -1058,3 +1058,68 @@ func TestModify_PersistsPlanOnConflict(t *testing.T) {
 	_ = gitx.RebaseAbort()
 	_ = stack.Delete()
 }
+
+// setupWorktreeStack builds main → A → B, checks A out in a second worktree,
+// then advances main from the original checkout.
+func setupWorktreeStack(t *testing.T, r *testutil.Repo) (branchA, branchB, wt string) {
+	t.Helper()
+	r.WriteFile("a.txt", "a\n")
+	r.MustGit("add", "a.txt")
+	branchA = mustCreate(t, "a")
+	r.WriteFile("b.txt", "b\n")
+	r.MustGit("add", "b.txt")
+	branchB = mustCreate(t, "b")
+
+	if err := gitx.Checkout("main"); err != nil {
+		t.Fatal(err)
+	}
+	wt = filepath.Join(t.TempDir(), "wt")
+	r.MustGit("worktree", "add", "-q", wt, branchA)
+
+	r.WriteFile("trunk.txt", "trunk moved\n")
+	r.MustGit("add", "trunk.txt")
+	r.MustGit("commit", "-qm", "trunk advance")
+	return branchA, branchB, wt
+}
+
+func TestSync_RebasesBranchInOtherWorktree(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+	branchA, branchB, wt := setupWorktreeStack(t, r)
+
+	resetFlags()
+	if err := runSync(nil, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if r.Head(branchA+"^") != r.Head("main") {
+		t.Fatal("A not rebased onto new main")
+	}
+	if r.Head(branchB+"^") != r.Head(branchA) {
+		t.Fatal("B not rebased onto new A")
+	}
+	if _, err := os.Stat(filepath.Join(wt, "trunk.txt")); err != nil {
+		t.Fatalf("worktree not updated: %v", err)
+	}
+}
+
+func TestSync_SkipsDirtyWorktreeAndDescendants(t *testing.T) {
+	r := testutil.NewRepo(t)
+	silenceStdout(t)
+	branchA, branchB, wt := setupWorktreeStack(t, r)
+	aBefore, bBefore := r.Head(branchA), r.Head(branchB)
+	if err := os.WriteFile(filepath.Join(wt, "a.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resetFlags()
+	if err := runSync(nil, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if r.Head(branchA) != aBefore || r.Head(branchB) != bBefore {
+		t.Fatal("expected A and B to be left alone")
+	}
+	got, err := os.ReadFile(filepath.Join(wt, "a.txt"))
+	if err != nil || string(got) != "dirty\n" {
+		t.Fatalf("worktree changes lost: %q %v", got, err)
+	}
+}

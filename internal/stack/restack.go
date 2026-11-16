@@ -83,19 +83,39 @@ func BuildPlanForChildren(s *Stack, root string, oldBaseFor func(branch string) 
 // Execute runs each step in order. If a rebase leaves a conflict, remaining
 // steps (including a marker for the currently-conflicted one) are persisted
 // via Save and gitx.ErrRebaseConflict is returned.
+//
+// A branch checked out in another worktree is rebased there. If that fails
+// (dirty worktree or conflict), the branch and its descendants are skipped
+// with a warning instead of stopping the whole plan.
 func (p *Plan) Execute() error {
+	worktrees, err := gitx.WorktreeBranches()
+	if err != nil {
+		return err
+	}
+	skipped := map[string]bool{}
 	for len(p.Steps) > 0 {
 		step := p.Steps[0]
-		if err := runStep(step); err != nil {
-			if errors.Is(err, gitx.ErrRebaseConflict) {
-				// Save remaining steps (including this one so `sb continue`
-				// knows what was in flight — after `git rebase --continue`
-				// finishes it, we'll pop it).
-				if saveErr := Save(p); saveErr != nil {
-					return fmt.Errorf("conflict during rebase, and failed to save plan: %v (original: %w)", saveErr, err)
-				}
-				return err
+		worktree := worktrees[step.Branch]
+		var err error
+		if skipped[step.NewBase] {
+			err = fmt.Errorf("parent %s was skipped", step.NewBase)
+		} else {
+			err = runStep(step, worktree)
+		}
+		switch {
+		case err == nil:
+		case worktree != "" || skipped[step.NewBase]:
+			skipped[step.Branch] = true
+			fmt.Printf("⚠ skipped %s: %v\n", step.Branch, err)
+		case errors.Is(err, gitx.ErrRebaseConflict):
+			// Save remaining steps (including this one so `sb continue`
+			// knows what was in flight — after `git rebase --continue`
+			// finishes it, we'll pop it).
+			if saveErr := Save(p); saveErr != nil {
+				return fmt.Errorf("conflict during rebase, and failed to save plan: %v (original: %w)", saveErr, err)
 			}
+			return err
+		default:
 			return err
 		}
 		p.Steps = p.Steps[1:]
@@ -108,7 +128,7 @@ func (p *Plan) Execute() error {
 	return nil
 }
 
-func runStep(s Step) error {
+func runStep(s Step, worktree string) error {
 	// Resolve NewBase to a SHA now. It might be a branch name given by the
 	// planner; we snapshot its tip so intervening rebases don't shift it.
 	newBaseSha, err := gitx.RevParse(s.NewBase)
@@ -120,6 +140,9 @@ func runStep(s Step) error {
 		// Fall back to the parent's current tip. Not ideal, but better than
 		// aborting.
 		oldBase = newBaseSha
+	}
+	if worktree != "" {
+		return gitx.RebaseInWorktree(worktree, newBaseSha, oldBase)
 	}
 	return gitx.RebaseOnto(newBaseSha, oldBase, s.Branch)
 }
